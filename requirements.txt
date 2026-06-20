@@ -1,2 +1,4 @@
 black
 ruff
+requests
+python-dotenv
