@@ -2,3 +2,4 @@ black
 ruff
 requests
 python-dotenv
+pyperclip
