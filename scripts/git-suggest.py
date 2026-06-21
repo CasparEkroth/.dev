@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import sys
 from pathlib import Path
@@ -12,7 +14,8 @@ if str(ROOT) not in sys.path:
 
 from shared.llm_client import call_llm
 
-load_dotenv()
+load_dotenv(ROOT / ".env")
+
 base_url = os.environ.get("LLM_BASE_URL")
 api_key = os.environ.get("LLM_API_KEY")
 model = os.environ.get("LLM_MODEL")
@@ -49,10 +52,11 @@ Git diff --cached:
 """
 
 
-def git_command(command: list[str]):
+def git_command(command: list[str], cwd:str):
     result = subprocess.run(
         ["git"] + command,
         text=True,
+        cwd=cwd,
         capture_output=True,
     )
     if result.returncode != 0:
@@ -62,10 +66,11 @@ def git_command(command: list[str]):
 
 
 if __name__ == "__main__":
+    cwd = os.getcwd()
     prompt = COMMIT_MESSAGE_PROMPT.format(
-        diff_cached=git_command(["diff", "--cached"]),
-        diff=git_command(["diff"]),
-        status=git_command(["status"]),
+        diff_cached=git_command(["diff", "--cached"], cwd=cwd),
+        diff=git_command(["diff"], cwd=cwd),
+        status=git_command(["status"], cwd=cwd),
     )
     raw = call_llm(
         base_url=base_url,
@@ -88,3 +93,6 @@ if __name__ == "__main__":
     print(commit_message)
     pyperclip.copy(commit_message)
 
+#make it in to a script
+#add a setup script in the bootum and README
+# also make the setup skript idempotent  

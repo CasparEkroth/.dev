@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -e
+
+COMMAND_NAME="git-suggest"
+
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="$PROJECT_ROOT/scripts/git-suggest.py"
+VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
+
+INSTALL_DIR="$HOME/.local/bin"
+TARGET_PATH="$INSTALL_DIR/$COMMAND_NAME"
+
+make install
+
+if [ ! -f "$SCRIPT_PATH" ]; then
+    echo "Error: script not found: $SCRIPT_PATH"
+    exit 1
+fi
+
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo "Error: venv Python not found: $VENV_PYTHON"
+    exit 1
+fi
+
+mkdir -p "$INSTALL_DIR"
+
+# remove old symlink/file
+rm -f "$TARGET_PATH"
+
+cat > "$TARGET_PATH" <<EOF
+#!/usr/bin/env bash
+exec "$VENV_PYTHON" "$SCRIPT_PATH" "\$@"
+EOF
+
+chmod +x "$TARGET_PATH"
+
+if ! echo ":$PATH:" | grep -q ":$INSTALL_DIR:"; then
+    if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zshrc" 2>/dev/null; then
+        echo '' >> "$HOME/.zshrc"
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+    fi
+
+    echo "Added ~/.local/bin to PATH. Run:"
+    echo "source ~/.zshrc"
+fi
+
+echo
+echo "Installed command: $COMMAND_NAME"
+echo "Using Python: $VENV_PYTHON"
