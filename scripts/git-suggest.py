@@ -92,7 +92,3 @@ if __name__ == "__main__":
     
     print(commit_message)
     pyperclip.copy(commit_message)
-
-#make it in to a script
-#add a setup script in the bootum and README
-# also make the setup skript idempotent  
