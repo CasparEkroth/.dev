@@ -3,3 +3,4 @@ ruff
 requests
 python-dotenv
 pyperclip
+sentence_transformers
