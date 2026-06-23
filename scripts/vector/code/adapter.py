@@ -49,7 +49,7 @@ class LanguageAdapter(ABC):
         pass
 
     def slice_node(self, node, source: str) -> str:
-        return source.encode("utf8")[node.start_byte():node.end_byte()].decode("utf8")
+        return source.encode("utf8")[node.start_byte() : node.end_byte()].decode("utf8")
 
     def get_name(self, node, source: str) -> str:
         name_node = node.child_by_field_name("name")
@@ -89,4 +89,3 @@ class LanguageAdapter(ABC):
             start_line=start.row + 1,
             end_line=end.row + 1,
         )
-

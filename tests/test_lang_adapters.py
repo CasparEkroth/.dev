@@ -1,8 +1,9 @@
-import unittest 
+import unittest
 from scripts.vector.code.lang_adapters import get_adapter
 
+
 class TestLangAdapters(unittest.TestCase):
-    
+
     def test_python_adapter(self):
         code = """
         class UserService:
@@ -29,7 +30,6 @@ class TestLangAdapters(unittest.TestCase):
         self.assertEqual(str(symbols[0]), s1)
         self.assertEqual(str(symbols[1]), s2)
 
-
     def test_java_adapter(self):
         code = """
         public class HelloWorld {
@@ -50,13 +50,13 @@ class TestLangAdapters(unittest.TestCase):
 
         self.assertEqual(symbols[1].kind, "function")
         self.assertEqual(symbols[1].name, "main")
-        self.assertEqual(symbols[1].signature, "public static void main(String[] args) {")
-
+        self.assertEqual(
+            symbols[1].signature, "public static void main(String[] args) {"
+        )
 
     def test_empty_file(self):
         symbols = get_adapter("python").extract_symbols("")
         self.assertEqual(symbols, [])
-
 
     def test_multiple_functions(self):
         code = """
@@ -69,7 +69,6 @@ class TestLangAdapters(unittest.TestCase):
         symbols = get_adapter("python").extract_symbols(code)
         self.assertEqual([s.name for s in symbols], ["a", "b"])
 
-
     def test_decorated_function(self):
         code = """
         @app.route("/users")
@@ -80,7 +79,6 @@ class TestLangAdapters(unittest.TestCase):
         self.assertEqual(symbols[0].name, "get_users")
         self.assertEqual(symbols[0].kind, "function")
 
-
     def test_async_function(self):
         code = """
         async def fetch_data():
@@ -90,14 +88,12 @@ class TestLangAdapters(unittest.TestCase):
         self.assertEqual(symbols[0].name, "fetch_data")
         self.assertEqual(symbols[0].kind, "function")
 
-
     def test_syntax_error_does_not_crash(self):
         code = """
         def broken(
         """
         symbols = get_adapter("python").extract_symbols(code)
         self.assertIsInstance(symbols, list)
-
 
     def test_unicode_names(self):
         code = """
@@ -109,7 +105,6 @@ class TestLangAdapters(unittest.TestCase):
         """
         symbols = get_adapter("python").extract_symbols(code)
         self.assertEqual([s.name for s in symbols], ["hälsa", "Café"])
-
 
     def test_nested_functions_and_classes(self):
         code = """
@@ -126,7 +121,6 @@ class TestLangAdapters(unittest.TestCase):
             [s.name for s in symbols],
             ["Outer", "Inner", "method", "inner_func"],
         )
-
 
     def test_fastapi_example(self):
         code = """
@@ -147,12 +141,8 @@ class TestLangAdapters(unittest.TestCase):
             ["get_users", "UserService"],
         )
 
-
     def test_large_file(self):
-        code = "\n\n".join(
-            f"def func_{i}():\n    pass"
-            for i in range(1000)
-        )
+        code = "\n\n".join(f"def func_{i}():\n    pass" for i in range(1000))
 
         symbols = get_adapter("python").extract_symbols(code)
 
