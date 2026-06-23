@@ -26,7 +26,7 @@ class TestEmbeddings(unittest.TestCase):
 
         assert len(a) == len(b)
         assert a == b
-    
+
     def test_embedding_dimension_is_consistent(self):
         a = embed_text("hello")
         b = embed_text("completely different longer text")
@@ -54,15 +54,19 @@ class TestEmbeddings(unittest.TestCase):
     def test_add_vector_and_vector_search(self):
         VECTOR_STORE.clear()
 
-        add_vector({
-            "payload": "refresh_token",
-            "text": "Function refreshes authentication tokens"
-        })
+        add_vector(
+            {
+                "payload": "refresh_token",
+                "text": "Function refreshes authentication tokens",
+            }
+        )
 
-        add_vector({
-            "payload": "save_config",
-            "text": "Function saves application configuration"
-        })
+        add_vector(
+            {
+                "payload": "save_config",
+                "text": "Function saves application configuration",
+            }
+        )
 
         result1 = search_vectors("refresh authentication tokens", k=1)
         self.assertEqual(result1[0]["payload"], "refresh_token")
@@ -74,15 +78,19 @@ class TestEmbeddings(unittest.TestCase):
         path = "vectors.json"
         VECTOR_STORE.clear()
 
-        add_vector({
-            "payload": "refresh_token",
-            "text": "Function refreshes authentication tokens"
-        })
+        add_vector(
+            {
+                "payload": "refresh_token",
+                "text": "Function refreshes authentication tokens",
+            }
+        )
 
-        add_vector({
-            "payload": "save_config",
-            "text": "Function saves application configuration"
-        })
+        add_vector(
+            {
+                "payload": "save_config",
+                "text": "Function saves application configuration",
+            }
+        )
 
         save_vectors(path)
 
@@ -98,4 +106,3 @@ class TestEmbeddings(unittest.TestCase):
         self.assertIn("refresh_token", payloads)
         self.assertIn("save_config", payloads)
         subprocess.run(["rm", path])
-

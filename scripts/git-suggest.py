@@ -52,7 +52,7 @@ Git diff --cached:
 """
 
 
-def git_command(command: list[str], cwd:str):
+def git_command(command: list[str], cwd: str):
     result = subprocess.run(
         ["git"] + command,
         text=True,
@@ -89,6 +89,6 @@ if __name__ == "__main__":
 
     if description:
         commit_message += f"\n\n{description}"
-    
+
     print(commit_message)
     pyperclip.copy(commit_message)
