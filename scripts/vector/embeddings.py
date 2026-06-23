@@ -47,14 +47,11 @@ def cosine_similarity(a, b):
 
 def search_vectors(query: str, k: int = 10) -> list:
     query_vector = embed_text(query)
-
     results = []
 
     for item in VECTOR_STORE:
         score = cosine_similarity(query_vector, item["vector"])
-
         results.append({"score": score, "payload": item["payload"]})
 
     results.sort(key=lambda x: x["score"], reverse=True)
-
     return results[:k]

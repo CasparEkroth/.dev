@@ -4,3 +4,5 @@ requests
 python-dotenv
 pyperclip
 sentence_transformers
+tree-sitter
+tree-sitter-language-pack
