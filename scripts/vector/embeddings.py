@@ -1,6 +1,16 @@
 from sentence_transformers import SentenceTransformer
 import json
 import numpy as np
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class VectorItem:
+    id: str
+    text: str
+    payload: dict[str, Any]
+
 
 model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
@@ -12,15 +22,15 @@ def embed_text(text: str) -> list[float]:
 VECTOR_STORE = []
 
 
-def add_vector(item: dict):
-    """then item needs to contain [id, text, payload]"""
-    vector = embed_text(item["text"])
+def add_vector(item: VectorItem):
+    embedding = embed_text(item.text)
 
     VECTOR_STORE.append(
         {
-            "id": id(item),
-            "vector": vector,
-            "payload": item["payload"],
+            "id": item.id,
+            "text": item.text,
+            "vector": embedding,
+            "payload": item.payload,
         }
     )
 

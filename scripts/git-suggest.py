@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from shared.llm_client import call_llm # noqa: E402
+from shared.llm_client import call_llm  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
