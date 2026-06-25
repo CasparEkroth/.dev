@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
-
-import os
-import sys
-from pathlib import Path
-from dotenv import load_dotenv
 import json
 import subprocess
+import os
 import pyperclip
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from shared.llm_client import call_llm
+from config import settings
 
-from shared.llm_client import call_llm  # noqa: E402
-
-load_dotenv(ROOT / ".env")
-
-base_url = os.environ.get("LLM_BASE_URL")
-api_key = os.environ.get("LLM_API_KEY")
-model = os.environ.get("LLM_MODEL")
+base_url = settings.LLM_BASE_URL
+api_key = settings.LLM_API_KEY
+model = settings.LLM_MODEL
 
 
 COMMIT_MESSAGE_PROMPT = """

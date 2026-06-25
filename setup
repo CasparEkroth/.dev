@@ -29,7 +29,7 @@ rm -f "$TARGET_PATH"
 
 cat > "$TARGET_PATH" <<EOF
 #!/usr/bin/env bash
-exec "$VENV_PYTHON" "$SCRIPT_PATH" "\$@"
+exec "$VENV_PYTHON" -m scripts.git-suggest "$@"
 EOF
 
 chmod +x "$TARGET_PATH"

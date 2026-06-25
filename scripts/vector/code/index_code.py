@@ -74,22 +74,7 @@ def index_repo(repo_path):
             """,
             }
         )
-        add_vector(
-            VectorItem(
-                id=f"symbol:{file}:{symbol.name}:{symbol.start_line}:{symbol.end_line}",
-                text=embedding_text,
-                payload={
-                    "kind": "symbol",
-                    "path": str(file),
-                    "language": language,
-                    "name": symbol.name,
-                    "symbol_type": symbol.kind,
-                    "start_line": symbol.start_line,
-                    "end_line": symbol.end_line,
-                    "hash": stable_hash(symbol_code),
-                },
-            )
-        )
+        
 
         for symbol in symbols:
             symbol_code = code[symbol.start : symbol.end]
@@ -106,22 +91,26 @@ def index_repo(repo_path):
             {symbol_code}
             """
 
-            add_vector(
-                {
-                    "kind": "symbol",
-                    "path": file.path,
-                    "name": symbol.name,
-                    "symbol_type": symbol.kind,
-                    "start_line": symbol.start_line,
-                    "end_line": symbol.end_line,
-                    "hash": hash(symbol_code),
-                    "embedding_text": embedding_text,
-                }
-            )
+        add_vector(
+                    VectorItem(
+                        id=f"symbol:{file}:{symbol.name}:{symbol.start_line}:{symbol.end_line}",
+                        text=embedding_text,
+                        payload={
+                            "kind": "symbol",
+                            "path": str(file),
+                            "language": language,
+                            "name": symbol.name,
+                            "symbol_type": symbol.kind,
+                            "start_line": symbol.start_line,
+                            "end_line": symbol.end_line,
+                            "hash": stable_hash(symbol_code),
+                        },
+                    )
+                )
 
         chunks = split_into_logical_chunks(code)
 
-        for chunk in chunks:
+        for chunk in chunks:# not done
             add_vector(
                 {
                     "kind": "chunk",
