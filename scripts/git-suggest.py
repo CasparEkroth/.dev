@@ -64,9 +64,6 @@ if __name__ == "__main__":
         status=git_command(["status"], cwd=cwd),
     )
     raw = call_llm(
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
         prompt=prompt,
     )
     try:

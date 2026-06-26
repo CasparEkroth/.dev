@@ -3,6 +3,16 @@ from scripts.vector.code.lang_adapters import (
     SUFFIX_TO_LANG,
     get_adapter,
 )
+from scripts.vector.code.adapter import Symbol
+from scripts.vector.prompts import (
+    SYMBOL_SUMMARY_PROMPT,
+    FILE_SUMMARY_PROMPT
+)
+from shared.llm_client import call_llm
+from config import (
+    EXCLUDED_DIRS, 
+    IGNORED_FILES
+)
 from pathlib import Path
 import hashlib
 
@@ -13,28 +23,37 @@ def stable_hash(text: str) -> str:
 
 def scan_folder(cwd: str) -> list[Path]:
     c = []
-    skip = {".git", "__pycache__"}
-    # add more (put in config)
-    # add a centralized config
     for path in Path(cwd).rglob("*"):
-        if any(part in skip for part in path.parts):
+        if any(part in EXCLUDED_DIRS for part in path.parts):
             continue
         if path.is_file():
             c.append(path)
+    return c
 
 
-def should_skip(file: str):
-    pass
+def should_skip(file: str) -> bool:
+    return (file in IGNORED_FILES)
 
 
-def llm_summarize_file(content: str):
-    # Create file-level summary
-    pass
+def llm_summarize_file(content: str, language: str, file: Path):
+    file_prompt = FILE_SUMMARY_PROMPT.format(
+        path=str(file),
+        language=language,
+        content=content,
+    )
+    return call_llm(file_prompt)
 
 
-def llm_summarize_symbol(symbols: str):
-    # Create symbol-level embeddings
-    pass
+def llm_summarize_symbol(symbol: Symbol, symbol_code: str, language: str, file: Path):
+    symbol_prompt = SYMBOL_SUMMARY_PROMPT.format(
+        path=str(file),
+        language=language,
+        kind=symbol.kind,
+        name=symbol.name,
+        signature=symbol.signature or "unknown",
+        code=symbol_code,
+    )
+    return call_llm(symbol_prompt)
 
 
 def split_into_logical_chunks(content: str):
@@ -57,32 +76,40 @@ def index_repo(repo_path):
         if language is None:
             continue
 
-        adapter = get_adapter(language)
-
-        symbols = adapter.extract_symbols(code)
-        file_summary = llm_summarize_file(code)
+        file_summary = llm_summarize_file(
+            content=code,
+            language=language,
+            file=file,
+        )
 
         add_vector(
             {
                 "kind": "file",
-                "path": file.path,
+                "path": str(file),
                 "language": language,
                 "embedding_text": f"""
-            File: {file.path}
+            File: {str(file)}
             Language: {language}
             Summary: {file_summary}
             """,
             }
         )
-        
 
+        adapter = get_adapter(language)
+        symbols = adapter.extract_symbols(code)
+        
         for symbol in symbols:
             symbol_code = code[symbol.start : symbol.end]
 
-            summary = llm_summarize_symbol(symbol_code)
+            summary = llm_summarize_symbol(
+                symbol=symbol, 
+                symbol_code=symbol_code, 
+                language=language, 
+                file=file
+            )
 
             embedding_text = f"""
-            Path: {file.path}
+            Path: {str(file)}
             Kind: {symbol.kind}
             Name: {symbol.name}
             Signature: {symbol.signature}
@@ -111,17 +138,25 @@ def index_repo(repo_path):
         chunks = split_into_logical_chunks(code)
 
         for chunk in chunks:# not done
+            embedding_text = f"""
+            Path: {str(file)}
+            Kind: {symbol.kind}
+            Name: {symbol.name}
+            Signature: {symbol.signature}
+            Summary: {summary}
+            Code:
+            {symbol_code}
+            """
             add_vector(
-                {
-                    "kind": "chunk",
-                    "path": file.path,
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "embedding_text": f"""
-                Path: {file.path}
-                Lines: {chunk.start_line}-{chunk.end_line}
-                Code:
-                {chunk.text}
-                """,
-                }
+                VectorItem(
+                    id=f"symbol:{file}:{symbol.name}:{symbol.start_line}:{symbol.end_line}",
+                    text=embedding_text,
+                    payload={
+                        "kind": "chunk",
+                        "path": str(file),
+                        "start_line": chunk.start_line,
+                        "end_line": chunk.end_line,
+                        "hash": stable_hash(symbol_code),
+                    }
+                )
             )
