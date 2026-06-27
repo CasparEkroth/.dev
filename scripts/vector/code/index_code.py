@@ -33,8 +33,8 @@ def scan_folder(cwd: str) -> list[Path]:
     return c
 
 
-def should_skip(file: str) -> bool:
-    return file in IGNORED_FILES
+def should_skip(file: Path) -> bool:
+    return file.name in IGNORED_FILES
 
 
 def llm_summarize_file(content: str, language: str, file: Path):
@@ -101,7 +101,7 @@ def index_repo(repo_path):
         with open(file, "r") as f:
             code = f.read()
 
-        language = SUFFIX_TO_LANG.get(file.suffix)
+        language = SUFFIX_TO_LANG.get(file.suffix.lstrip("."))
 
         if language is None:
             continue
@@ -112,17 +112,26 @@ def index_repo(repo_path):
             file=file,
         )
 
+        embedding_text = f"""
+        Path: {str(file)}
+        Kind: "file"
+        Name: {file.name}
+        Summary: {file_summary}
+        Code:
+        {code}
+        """
         add_vector(
-            {
-                "kind": "file",
-                "path": str(file),
-                "language": language,
-                "embedding_text": f"""
-            File: {str(file)}
-            Language: {language}
-            Summary: {file_summary}
-            """,
-            }
+            VectorItem(
+                id=f"file:{file}",
+                text=embedding_text,
+                payload={
+                    "kind": "file",
+                    "path": str(file),
+                    "language": language,
+                    "summary": file_summary,
+                    "hash": stable_hash(file_summary),
+                },
+            )
         )
 
         adapter = get_adapter(language)

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="$ROOT/.venv/bin/python"
+
+cd "$ROOT"
+
+exec "$PYTHON" -m scripts.vector.vector_cli "$@"
+
+
+# add this to setup
+# ln -sf "$(pwd)/vector-index" "$HOME/.local/bin/vector-index"
+# chmod +x vector-index

@@ -3,7 +3,8 @@ import json
 import numpy as np
 from dataclasses import dataclass
 from typing import Any
-
+import os
+from config import settings
 
 @dataclass
 class VectorItem:
@@ -12,14 +13,40 @@ class VectorItem:
     payload: dict[str, Any]
 
 
-model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+_model = None
+
+def get_model():
+    global _model
+
+    if _model is None:
+        _model = SentenceTransformer(
+            MODEL_NAME,
+            token=settings.HF_TOKEN,
+        )
+
+    return _model
 
 
 def embed_text(text: str) -> list[float]:
+    model = get_model()
     return model.encode(text).tolist()
 
 
 VECTOR_STORE = []
+
+
+def to_jsonable(value: Any):
+    if isinstance(value, dict):
+        return {key: to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [to_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [to_jsonable(item) for item in value]
+    if isinstance(value, set):
+        return [to_jsonable(item) for item in value]
+    return value
 
 
 def add_vector(item: VectorItem):
@@ -36,8 +63,13 @@ def add_vector(item: VectorItem):
 
 
 def save_vectors(path="vectors.json"):
+    dir_name = os.path.dirname(path)
+
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+    
     with open(path, "w") as f:
-        json.dump(VECTOR_STORE, f)
+        json.dump(to_jsonable(VECTOR_STORE), f)
 
 
 def load_vectors(path="vectors.json"):
@@ -64,4 +96,7 @@ def search_vectors(query: str, k: int = 10) -> list:
         results.append({"score": score, "payload": item["payload"]})
 
     results.sort(key=lambda x: x["score"], reverse=True)
+    if len(results) < k:
+        return results
+    
     return results[:k]
