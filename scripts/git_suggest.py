@@ -6,7 +6,6 @@ import pyperclip
 
 from shared.llm_client import call_llm
 
-
 COMMIT_MESSAGE_PROMPT = """
 Generate a Git commit message from the given status and diff.
 

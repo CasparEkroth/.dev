@@ -6,6 +6,7 @@ from typing import Any
 import os
 from config import settings
 
+
 @dataclass
 class VectorItem:
     id: str
@@ -16,6 +17,7 @@ class VectorItem:
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 _model = None
+
 
 def get_model():
     global _model
@@ -67,7 +69,7 @@ def save_vectors(path="vectors.json"):
 
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-    
+
     with open(path, "w") as f:
         json.dump(to_jsonable(VECTOR_STORE), f)
 
@@ -98,5 +100,5 @@ def search_vectors(query: str, k: int = 10) -> list:
     results.sort(key=lambda x: x["score"], reverse=True)
     if len(results) < k:
         return results
-    
+
     return results[:k]
