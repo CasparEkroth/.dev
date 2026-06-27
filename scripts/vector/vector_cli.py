@@ -6,14 +6,21 @@ import argparse
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="vector-index")
-
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    repo_parser = subparsers.add_parser("repo")
+    repo_parser = subparsers.add_parser(
+        "repo",
+        help="Index a code repository",
+        description="Create vector embeddings from source files in a repository."
+    )
     repo_parser.add_argument("path", type=Path)
     repo_parser.add_argument("--out", type=Path, default=Path("vectors.json"))
 
-    pdf_parser = subparsers.add_parser("pdf")
+    pdf_parser = subparsers.add_parser(
+        "pdf",
+        help="Index a PDF document",
+        description="Create vector embeddings from pages or chunks in a PDF file."
+    )
     pdf_parser.add_argument("path", type=Path)
     pdf_parser.add_argument("--out", type=Path, default=Path("vectors.json"))
 
@@ -34,7 +41,7 @@ def main() -> None:
 
         print("Done")
 
-    elif args.command == "pdf":
+    elif args.command == "pdf": #TODO add a index_pdf
         if not args.path.is_file() or args.path.suffix.lower() != ".pdf":
             parser.error(f"Expected PDF file: {args.path}")
 

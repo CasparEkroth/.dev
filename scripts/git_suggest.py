@@ -5,11 +5,6 @@ import os
 import pyperclip
 
 from shared.llm_client import call_llm
-from config import settings
-
-base_url = settings.LLM_BASE_URL
-api_key = settings.LLM_API_KEY
-model = settings.LLM_MODEL
 
 
 COMMIT_MESSAGE_PROMPT = """

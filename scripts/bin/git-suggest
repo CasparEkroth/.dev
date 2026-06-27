@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PYTHON="$ROOT/.venv/bin/python"
+
+cd "$ROOT"
+
+exec "$PYTHON" -m scripts.git_suggest "$@"
