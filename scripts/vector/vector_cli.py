@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import argparse
-
+import json
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="vector-index")
@@ -23,6 +23,35 @@ def main() -> None:
     )
     pdf_parser.add_argument("path", type=Path)
     pdf_parser.add_argument("--out", type=Path, default=Path("vectors.json"))
+
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Search existing vectors",
+        description="Search a vector file using semantic similarity.",
+    )
+    search_parser.add_argument("query", type=str)
+    search_parser.add_argument(
+        "-v",
+        "--vec",
+        "--vectors",
+        type=Path,
+        dest="vectors",
+        default=Path("vectors.json"),
+        help="Path to the vector JSON file",
+    )
+    search_parser.add_argument(
+        "-k",
+        "--top-k",
+        type=int,
+        dest="k",
+        default=10,
+        help="Number of search results to return",
+    )
+    search_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw JSON results",
+    )
 
     args = parser.parse_args()
 
@@ -55,6 +84,31 @@ def main() -> None:
         # index_pdf(args.path)
         # save_vectors(args.out)
 
+    elif args.command == "search":
+        if not args.vectors.is_file():
+            parser.error(f"Vector file not found: {args.vectors}")
+        
+        from scripts.vector.embeddings import load_vectors, search_vectors
+
+        load_vectors(args.vectors)
+
+        results = search_vectors(args.query, k=args.k)
+
+        if args.json:
+            print(json.dumps(results, indent=2))
+            return
+        
+        for i, result in enumerate(results, start=1):
+            score = result["score"]
+            payload = result["payload"]
+
+            print(f"\n{i}. score={score:.4f}")
+
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    print(f"{key}: {value}")
+            else:
+                print(payload)
 
 if __name__ == "__main__":
     main()
