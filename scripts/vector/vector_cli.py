@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse
 import json
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="vector-index")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -87,7 +88,7 @@ def main() -> None:
     elif args.command == "search":
         if not args.vectors.is_file():
             parser.error(f"Vector file not found: {args.vectors}")
-        
+
         from scripts.vector.embeddings import load_vectors, search_vectors
 
         load_vectors(args.vectors)
@@ -97,7 +98,7 @@ def main() -> None:
         if args.json:
             print(json.dumps(results, indent=2))
             return
-        
+
         for i, result in enumerate(results, start=1):
             score = result["score"]
             payload = result["payload"]
@@ -109,6 +110,7 @@ def main() -> None:
                     print(f"{key}: {value}")
             else:
                 print(payload)
+
 
 if __name__ == "__main__":
     main()
