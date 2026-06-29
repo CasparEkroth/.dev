@@ -1,25 +1,10 @@
 #!/usr/bin/env python3
-
-import os
-import sys
-from pathlib import Path
-from dotenv import load_dotenv
 import json
 import subprocess
+import os
 import pyperclip
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from shared.llm_client import call_llm
-
-load_dotenv(ROOT / ".env")
-
-base_url = os.environ.get("LLM_BASE_URL")
-api_key = os.environ.get("LLM_API_KEY")
-model = os.environ.get("LLM_MODEL")
-
 
 COMMIT_MESSAGE_PROMPT = """
 Generate a Git commit message from the given status and diff.
@@ -52,7 +37,7 @@ Git diff --cached:
 """
 
 
-def git_command(command: list[str], cwd:str):
+def git_command(command: list[str], cwd: str):
     result = subprocess.run(
         ["git"] + command,
         text=True,
@@ -73,9 +58,6 @@ if __name__ == "__main__":
         status=git_command(["status"], cwd=cwd),
     )
     raw = call_llm(
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
         prompt=prompt,
     )
     try:
@@ -89,6 +71,6 @@ if __name__ == "__main__":
 
     if description:
         commit_message += f"\n\n{description}"
-    
+
     print(commit_message)
     pyperclip.copy(commit_message)

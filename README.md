@@ -44,8 +44,6 @@ This repo is meant to grow. To add more developer tools:
 3. Update `setup` to install the new command into `~/.local/bin`
 4. Re-run `./setup`
 
-That keeps the workflow simple: the installer becomes the single place that
-decides which commands are available.
 
 ## Development
 
