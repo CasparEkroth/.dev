@@ -101,7 +101,7 @@ def index_repo(repo_path):
         with open(file, "r") as f:
             code = f.read()
 
-        language = SUFFIX_TO_LANG.get(file.suffix.lstrip("."))
+        language = SUFFIX_TO_LANG.get(file.suffix) or SUFFIX_TO_LANG.get(file.suffix.lstrip("."))
 
         if language is None:
             continue

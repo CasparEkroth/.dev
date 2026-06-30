@@ -60,10 +60,11 @@ class TestIndexRepo(unittest.TestCase):
             file_item = added[0]
             symbol_item = added[1]
 
-            self.assertEqual(file_item["kind"], "file")
-            self.assertEqual(file_item["path"], str(file))
-            self.assertEqual(file_item["language"], "python")
-            self.assertIn("file summary", file_item["embedding_text"])
+            self.assertIsInstance(file_item, VectorItem)
+            self.assertEqual(file_item.payload["kind"], "file")
+            self.assertEqual(file_item.payload["path"], str(file))
+            self.assertEqual(file_item.payload["language"], "python")
+            self.assertIn("file summary", file_item.text)
 
             self.assertIsInstance(symbol_item, VectorItem)
             self.assertEqual(symbol_item.payload["kind"], "symbol")
@@ -104,8 +105,9 @@ class TestIndexRepo(unittest.TestCase):
             file_item = added[0]
             chunk_item = added[1]
 
-            self.assertEqual(file_item["kind"], "file")
-            self.assertIn("file summary", file_item["embedding_text"])
+            self.assertIsInstance(file_item, VectorItem)
+            self.assertEqual(file_item.payload["kind"], "file")
+            self.assertIn("file summary", file_item.text)
 
             self.assertIsInstance(chunk_item, VectorItem)
             self.assertEqual(chunk_item.payload["kind"], "chunk")
