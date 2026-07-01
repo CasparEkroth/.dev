@@ -27,7 +27,7 @@ def web_search(query: str, max_results: int = 5) -> dict:
     return chunks
 
 
-def search(question: str)-> str:
+def search(question: str) -> str:
     resp = web_search(query=question)
     prompt = WEB_SEARCH_PROMPT.format(
         user_input=question,

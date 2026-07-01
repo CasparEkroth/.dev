@@ -1,11 +1,12 @@
 from pathlib import Path
 
+
 def scan_folder(
     cwd: str | Path,
     excluded_dirs: set[str] | None = None,
     suffixes: set[str] | None = None,
 ) -> list[Path]:
-    
+
     excluded_dirs = excluded_dirs or set()
     if suffixes is not None:
         suffixes = {suffix.lstrip(".") for suffix in suffixes}

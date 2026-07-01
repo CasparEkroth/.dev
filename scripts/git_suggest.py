@@ -29,9 +29,6 @@ Rules:
 Git status:
 {status}
 
-Git diff:
-{diff}
-
 Git diff --cached:
 {diff_cached}
 """
@@ -54,7 +51,6 @@ if __name__ == "__main__":
     cwd = os.getcwd()
     prompt = COMMIT_MESSAGE_PROMPT.format(
         diff_cached=git_command(["diff", "--cached"], cwd=cwd),
-        diff=git_command(["diff"], cwd=cwd),
         status=git_command(["status"], cwd=cwd),
     )
     raw = call_llm(

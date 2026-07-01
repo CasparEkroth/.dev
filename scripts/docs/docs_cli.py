@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 from shared.file_handler import scan_folder
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="docs")
 
@@ -49,20 +50,19 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.file:
-        files =[args.file]
+        files = [args.file]
     elif args.dir:
         files = scan_folder(
             cwd=args.dir,
             suffixes=set(args.suffix),
             excluded_dirs=set(args.exclude) if args.exclude else None,
         )
-    
+
     print(args.query)
     print(files)
-    #print("Query:", args.query)
-    #resp = search(question=args.query)
-    #print(resp)
-
+    # print("Query:", args.query)
+    # resp = search(question=args.query)
+    # print(resp)
 
 
 if __name__ == "__main__":
