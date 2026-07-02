@@ -1,8 +1,15 @@
 from scripts.docs.search import search
+from scripts.docs.prompts import (
+    WEB_SEARCH_PROMPT,
+    ROUTER_PROMPT,
+    NO_SEARCH_PROMPT,
+)
+import json
 import argparse
 from pathlib import Path
-from shared.file_handler import scan_folder
-
+from shared.file_handler import scan_folder, read_files
+from shared.llm_client import call_llm
+import json
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="docs")
@@ -57,13 +64,34 @@ def main() -> None:
             suffixes=set(args.suffix),
             excluded_dirs=set(args.exclude) if args.exclude else None,
         )
+    
+    if files:
+        file_content = read_files(files)
+    
 
-    print(args.query)
-    print(files)
-    # print("Query:", args.query)
-    # resp = search(question=args.query)
-    # print(resp)
+    routing_prompt = ROUTER_PROMPT.format(
+        user_input=args.query,
+        files=file_content,
+    )
+    routing_resp = json.loads(call_llm(routing_prompt))
+    requires_search = routing_resp.get("requires_search")
 
+    if requires_search:
+        resp_search = search(question=routing_resp.get("search_query"))
+        web_prompt = WEB_SEARCH_PROMPT.format(
+            user_input=args.query,
+            files=file_content if file_content else "None",
+            search_context=resp_search,
+        )
+        response = call_llm(prompt=web_prompt)
+    else:
+        no_web_prompt = NO_SEARCH_PROMPT.format(
+            user_input=args.query,
+            files=file_content,
+        )
+        response = call_llm(no_web_prompt)
+    
+    print(response)
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import os
 
 def scan_folder(
     cwd: str | Path,
@@ -16,10 +16,27 @@ def scan_folder(
         if any(part in excluded_dirs for part in path.parts):
             continue
         if not path.is_file():
-            continue
-        if suffixes is not None:
+            continue        
+        if suffixes is not None and path.suffix != "":
             if path.suffix.lstrip(".") not in suffixes:
                 continue
+        
         files.append(path)
 
     return files
+
+
+def read_files(paths: list[Path]) -> dict:
+    collection = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        with open(path, "r") as f:
+            collection.append(
+                {
+                    "file_name": path.name,
+                    "path": str(path),
+                    "content": f.read(),
+                }
+            )
+    return collection
