@@ -1,5 +1,5 @@
 from pathlib import Path
-import os
+
 
 def scan_folder(
     cwd: str | Path,
@@ -16,11 +16,11 @@ def scan_folder(
         if any(part in excluded_dirs for part in path.parts):
             continue
         if not path.is_file():
-            continue        
+            continue
         if suffixes is not None and path.suffix != "":
             if path.suffix.lstrip(".") not in suffixes:
                 continue
-        
+
         files.append(path)
 
     return files

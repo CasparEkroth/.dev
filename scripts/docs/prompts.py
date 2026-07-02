@@ -49,7 +49,7 @@ Instructions:
 Provide a complete answer.
 """
 
-NO_SEARCH_PROMPT ="""
+NO_SEARCH_PROMPT = """
 You are answering the user's question.
 
 User question:

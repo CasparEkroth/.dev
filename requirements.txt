@@ -8,3 +8,4 @@ tree-sitter
 tree-sitter-language-pack
 pydantic_settings
 tavily-python
+rich

@@ -9,19 +9,18 @@ import argparse
 from pathlib import Path
 from shared.file_handler import scan_folder, read_files
 from shared.llm_client import call_llm
-import json
+from rich.status import Status
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="docs")
 
     parser.add_argument(
-        "-q",
-        "--query",
-        required=True,
+        "query",
         help="Question/query to ask about the provided files",
     )
 
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group()
 
     source.add_argument(
         "-f",
@@ -55,7 +54,7 @@ def main() -> None:
         help="Directory names to skip",
     )
     args = parser.parse_args()
-
+    files = None
     if args.file:
         files = [args.file]
     elif args.dir:
@@ -64,34 +63,41 @@ def main() -> None:
             suffixes=set(args.suffix),
             excluded_dirs=set(args.exclude) if args.exclude else None,
         )
-    
+
     if files:
         file_content = read_files(files)
-    
+    else:
+        file_content = "None"
 
     routing_prompt = ROUTER_PROMPT.format(
         user_input=args.query,
         files=file_content,
     )
-    routing_resp = json.loads(call_llm(routing_prompt))
+
+    with Status("[bold green]Thinking...", spinner="dots"):
+        routing_resp = json.loads(call_llm(routing_prompt))
     requires_search = routing_resp.get("requires_search")
 
     if requires_search:
-        resp_search = search(question=routing_resp.get("search_query"))
+        with Status("[bold green]Searching the web...", spinner="dots"):
+            resp_search = search(question=routing_resp.get("search_query"))
         web_prompt = WEB_SEARCH_PROMPT.format(
             user_input=args.query,
-            files=file_content if file_content else "None",
+            files=file_content,
             search_context=resp_search,
         )
-        response = call_llm(prompt=web_prompt)
+        with Status("[bold green]Generating answer...", spinner="dots"):
+            response = call_llm(prompt=web_prompt)
     else:
         no_web_prompt = NO_SEARCH_PROMPT.format(
             user_input=args.query,
             files=file_content,
         )
-        response = call_llm(no_web_prompt)
-    
+        with Status("[bold green]Generating answer...", spinner="dots"):
+            response = call_llm(no_web_prompt)
+
     print(response)
+
 
 if __name__ == "__main__":
     main()
