@@ -10,4 +10,4 @@ lint: install
 	.venv/bin/ruff check .
 
 test: install
-	.venv/bin/python3 -m unittest discover tests
+	.venv/bin/python3 -m unittest discover -s tests -p "test_*.py"

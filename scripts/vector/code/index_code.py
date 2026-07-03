@@ -7,6 +7,7 @@ from scripts.vector.code.adapter import Symbol
 from scripts.vector.prompts import SYMBOL_SUMMARY_PROMPT, FILE_SUMMARY_PROMPT
 from shared.llm_client import call_llm
 from config import EXCLUDED_DIRS, IGNORED_FILES
+from shared.file_handler import scan_folder
 from pathlib import Path
 import hashlib
 from dataclasses import dataclass
@@ -21,16 +22,6 @@ class Chunk:
 
 def stable_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf8")).hexdigest()
-
-
-def scan_folder(cwd: str) -> list[Path]:
-    c = []
-    for path in Path(cwd).rglob("*"):
-        if any(part in EXCLUDED_DIRS for part in path.parts):
-            continue
-        if path.is_file():
-            c.append(path)
-    return c
 
 
 def should_skip(file: Path) -> bool:
@@ -92,7 +83,10 @@ def split_into_logical_chunks(
 
 
 def index_repo(repo_path):
-    files = scan_folder(repo_path)
+    files = scan_folder(
+        cwd=repo_path,
+        excluded_dirs=EXCLUDED_DIRS,
+    )
 
     for file in files:
         if should_skip(file):
@@ -101,7 +95,9 @@ def index_repo(repo_path):
         with open(file, "r") as f:
             code = f.read()
 
-        language = SUFFIX_TO_LANG.get(file.suffix.lstrip("."))
+        language = SUFFIX_TO_LANG.get(file.suffix) or SUFFIX_TO_LANG.get(
+            file.suffix.lstrip(".")
+        )
 
         if language is None:
             continue

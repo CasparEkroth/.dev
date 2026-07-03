@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""
     LLM_MODEL: str = ""
     HF_TOKEN: str | None = None
+    TAVILY_API_KEY: str = ""
 
 
 settings = Settings()
