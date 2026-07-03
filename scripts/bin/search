@@ -6,4 +6,4 @@ PYTHON="$ROOT/.venv/bin/python"
 
 cd "$ROOT"
 
-exec "$PYTHON" -m scripts.docs.docs_cli "$@"
+exec "$PYTHON" -m scripts.search.search_cli "$@"

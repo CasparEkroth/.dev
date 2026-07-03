@@ -1,5 +1,5 @@
-from scripts.docs.search import search
-from scripts.docs.prompts import (
+from scripts.search.search import search
+from scripts.search.prompts import (
     WEB_SEARCH_PROMPT,
     ROUTER_PROMPT,
     NO_SEARCH_PROMPT,
@@ -15,7 +15,7 @@ from rich.markdown import Markdown
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="docs")
+    parser = argparse.ArgumentParser(prog="search")
 
     parser.add_argument(
         "query",
