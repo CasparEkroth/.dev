@@ -10,6 +10,8 @@ from pathlib import Path
 from shared.file_handler import scan_folder, read_files
 from shared.llm_client import call_llm
 from rich.status import Status
+from rich.console import Console
+from rich.markdown import Markdown
 
 
 def main() -> None:
@@ -96,7 +98,8 @@ def main() -> None:
         with Status("[bold green]Generating answer...", spinner="dots"):
             response = call_llm(no_web_prompt)
 
-    print(response)
+    console = Console()
+    console.print(Markdown(response))
 
 
 if __name__ == "__main__":

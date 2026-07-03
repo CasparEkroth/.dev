@@ -45,6 +45,7 @@ Instructions:
 - Do not invent facts.
 - If the search results are insufficient, explicitly state that.
 - When referencing search results, include the corresponding URLs.
+- Respond using Markdown
 
 Provide a complete answer.
 """
@@ -64,6 +65,7 @@ Instructions:
 - Use general knowledge only when it does not contradict the files.
 - If the information is insufficient, state what is missing.
 - Do not invent facts.
+- Respond using Markdown
 
 Provide a complete answer.
 """
