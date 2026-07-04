@@ -34,3 +34,35 @@ def call_llm(prompt: str) -> str:
         model=settings.LLM_MODEL,
         prompt=prompt,
     )
+
+
+def call_llm_with_tools(
+    system_prompt: str,
+    conversation_history: dict,
+    tool_definitions: dict,
+) -> dict:
+    messages = [{"role": "system", "content": system_prompt}] + conversation_history
+
+    payload = {
+        "model": settings.LLM_MODEL,
+        "messages": messages,
+    }
+    if tool_definitions:
+        payload["tools"] = tool_definitions
+        payload["tool_choice"] = "auto"
+
+    endpoint = settings.LLM_BASE_URL.rstrip("/")
+    if not endpoint.endswith(("/chat/completions", "/responses")):
+        endpoint = f"{endpoint}/chat/completions"
+
+    r = requests.post(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {settings.LLM_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]
