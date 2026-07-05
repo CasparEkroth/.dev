@@ -1,19 +1,20 @@
 from shared.llm_client import call_llm_with_tools
 import json
 
+
 def run_agent(
-    system_prompt: str, 
-    user_input: str, 
-    tool_registry: dict, 
+    system_prompt: str,
+    user_input: str,
+    tool_registry: dict,
     max_turns: int = 10,
-    confirm_fn = None 
+    confirm_fn=None,
 ) -> str:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
     """
     conversation = [{"role": "user", "content": user_input}]
     tool_definitions = [t["schema"] for t in tool_registry.values()]
-    confirm_fn = confirm_fn or _cli_confirm 
+    confirm_fn = confirm_fn or _cli_confirm
 
     for _ in range(max_turns):
         message = call_llm_with_tools(system_prompt, conversation, tool_definitions)
@@ -31,18 +32,22 @@ def run_agent(
             need_confirmation = tool_registry[name]["requires_confirmation"]
 
             if need_confirmation and not confirm_fn(name, args):
-                result = f"User denied permission to run tool '{name}' with args {args}."
+                result = (
+                    f"User denied permission to run tool '{name}' with args {args}."
+                )
             else:
                 try:
                     result = fn(**args)
                 except Exception as e:
                     result = f"Error: {e}"
 
-            conversation.append({
-                "role": "tool",
-                "tool_call_id": call["id"],
-                "content": str(result),
-            })
+            conversation.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "content": str(result),
+                }
+            )
 
     return "Max turns reached without a final answer."
 

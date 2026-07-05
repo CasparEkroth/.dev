@@ -1,6 +1,5 @@
 from scripts.agent.tools.shell import run_shell
 
-
 tool_registry = {
     # "read_spreadsheet": {
     #     "schema": {
