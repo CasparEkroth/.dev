@@ -1,25 +1,7 @@
 from scripts.agent.tools.shell import run_shell
+from shared.file_handler import read_file
 
 tool_registry = {
-    # "read_spreadsheet": {
-    #     "schema": {
-    #         "type": "function",
-    #         "function": {
-    #             "name": "read_spreadsheet",
-    #             "description": "Read cell values from a spreadsheet.",
-    #             "parameters": {
-    #                 "type": "object",
-    #                 "properties": {
-    #                     "path": {"type": "string"},
-    #                     "sheet": {"type": "string"},
-    #                 },
-    #                 "required": ["path"],
-    #             },
-    #         },
-    #     },
-    #     "fn": read_spreadsheet_impl,
-    #     "requires_confirmation": False,
-    # },
     "shell": {
         "schema": {
             "type": "function",
@@ -45,6 +27,32 @@ tool_registry = {
             },
         },
         "fn": run_shell,
+        "requires_confirmation": True,
+    },
+    "read_file": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a sectio off a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "start_line": {
+                            "type": "integer",
+                            "description": "Optional 1-based starting line, inclusive",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": "Optional 1-based ending line, inclusive",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        "fn": read_file,
         "requires_confirmation": True,
     },
 }

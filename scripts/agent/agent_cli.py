@@ -2,6 +2,8 @@ from scripts.agent.agent_loop import run_agent
 from scripts.agent.tools.registry import tool_registry
 import argparse
 from uuid import UUID
+from rich.console import Console
+from rich.markdown import Markdown
 
 
 def main() -> None:
@@ -29,7 +31,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-
+    console = Console()
     if args.headless:
         r = run_agent(
             system_prompt="you are a coding agent",
@@ -38,7 +40,7 @@ def main() -> None:
             # agent_type=args.agent_type,
             # save_session=args.save_session,
         )
-        print(r)
+        console.print(Markdown(r))
 
 
 if __name__ == "__main__":
