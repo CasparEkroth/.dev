@@ -60,3 +60,33 @@ def read_file(path: str, start_line: int = None, end_line: int = None) -> dict:
             start_line if start_line else 0 : end_line if end_line else len(lines)
         ],
     }
+
+
+def write_file(content: list[dict]) -> str:
+    results = []
+    for section in content:
+        path = Path(section.get("path"))
+        old = section.get("old", "")
+        new = section.get("new", "")
+        # handel old is eampty####
+        if not path.is_file():
+            results.append(f"{path}: file not found")
+            continue
+
+        current_file = path.read_text()
+
+        if old == "":
+            updated_file = current_file + new
+            path.write_text(updated_file)
+            results.append(f"{path}: appended content")
+            continue
+
+        if old not in current_file:
+            results.append(f"{path}: search text not found, no changes made")
+            continue
+
+        updated_file = current_file.replace(old, new, 1)
+        path.write_text(updated_file)
+        results.append(f"{path}: updated successfully")
+
+    return "\n".join(results)

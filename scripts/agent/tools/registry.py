@@ -1,5 +1,5 @@
 from scripts.agent.tools.shell import run_shell
-from shared.file_handler import read_file
+from shared.file_handler import read_file, write_file
 
 tool_registry = {
     "shell": {
@@ -34,7 +34,7 @@ tool_registry = {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a sectio off a file",
+                "description": "Read a section off a file",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -53,6 +53,42 @@ tool_registry = {
             },
         },
         "fn": read_file,
+        "requires_confirmation": True,
+    },
+    "write_file": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write to file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "old": {
+                                        "type": "string",
+                                        "description": "The old string that gets replaced by the new",
+                                    },
+                                    "new": {
+                                        "type": "string",
+                                        "description": "The new string that replaces the old string",
+                                    },
+                                },
+                                "required": ["path", "old", "new"],
+                            },
+                            "description": "Items as list, e.g [{'path':'path/file.txt','old':'text that gets replaced', 'new':'text that replaces the old text'},{...}]",
+                        },
+                    },
+                    "required": ["content"],
+                },
+            },
+        },
+        "fn": write_file,
         "requires_confirmation": True,
     },
 }
