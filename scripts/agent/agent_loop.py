@@ -1,3 +1,6 @@
+from uuid import UUID
+
+from scripts.agent.memory import save_conversation
 from shared.llm_client import call_llm_with_tools
 import json
 
@@ -8,6 +11,8 @@ def run_agent(
     tool_registry: dict,
     max_turns: int = 10,
     confirm_fn=None,
+    session_id: UUID = None,
+    save_session: bool = True,
 ) -> str:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
@@ -22,6 +27,7 @@ def run_agent(
 
         tool_calls = message.get("tool_calls")
         if not tool_calls:
+            save_conversation(conversation, session_id=session_id)
             return message.get("content", "")
 
         for call in tool_calls:
@@ -39,6 +45,7 @@ def run_agent(
                 try:
                     result = fn(**args)
                 except Exception as e:
+                    save_conversation(conversation, session_id=session_id)
                     result = f"Error: {e}"
 
             conversation.append(
@@ -48,7 +55,8 @@ def run_agent(
                     "content": str(result),
                 }
             )
-
+    if save_session:
+        save_conversation(conversation, session_id=session_id)
     return "Max turns reached without a final answer."
 
 
