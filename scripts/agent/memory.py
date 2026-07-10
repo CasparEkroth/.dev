@@ -1,12 +1,12 @@
 import json
 from uuid import UUID, uuid4
-import os
 from pathlib import Path
+import os
 
 SESSIONS_DIR = Path("sessions/")
 
 
-def save_conversation(
+def save_session(
     conversation: list[dict],
     session_id: UUID = None,
     session_dir: Path = SESSIONS_DIR,
@@ -28,8 +28,23 @@ def save_conversation(
     return session_id
 
 
-def load_conversation(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> list[dict]:
+def load_sessions(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> list[dict]:
     path = session_dir / str(session_id)
     if not path.exists():
         return []
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def get_list_of_sessions(
+    session_dir: Path = SESSIONS_DIR,
+) -> list[UUID]:
+    return list(session_dir.iterdir())
+
+
+def remove_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> bool:
+    path = session_dir / str(session_id)
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
