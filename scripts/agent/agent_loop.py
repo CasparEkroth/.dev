@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from scripts.agent.memory import save_session
+from scripts.agent.memory import save_session, load_session
 from shared.llm_client import call_llm_with_tools
 import json
 
@@ -20,6 +20,9 @@ def run_agent(
     conversation = [{"role": "user", "content": user_input}]
     tool_definitions = [t["schema"] for t in tool_registry.values()]
     confirm_fn = confirm_fn or _cli_confirm
+
+    if session_id:
+        conversation = load_session(session_id)
 
     for _ in range(max_turns):
         message = call_llm_with_tools(system_prompt, conversation, tool_definitions)

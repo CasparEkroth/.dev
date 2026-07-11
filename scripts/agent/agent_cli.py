@@ -19,7 +19,9 @@ def main() -> None:
 
     command = parser.add_mutually_exclusive_group()
 
-    command.add_argument("--resume", help="Resumes the last open session")
+    command.add_argument(
+        "--resume", action="store_true", help="Resumes the last open session"
+    )
     command.add_argument("--resume-id", type=UUID, help="Resumes session on id")
     command.add_argument(
         "--list-sessions",
@@ -54,6 +56,15 @@ def main() -> None:
         sessions.sort(key=lambda x: x[1], reverse=True)
         string = format_sessions(sessions)
         console.print(Markdown(string))
+        return
+
+    if args.resume or args.resume_id:
+        sessions = get_list_of_sessions()
+        sessions.sort(key=lambda x: x[1], reverse=True)
+
+        session_id = args.resume_id if args.resume_id else sessions[0][0].name
+
+        print(session_id)
 
     if args.headless:
         r = run_agent(

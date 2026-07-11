@@ -37,7 +37,7 @@ def load_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> list[dic
 
 def get_list_of_sessions(
     session_dir: Path = SESSIONS_DIR,
-) -> list[(UUID, float)]:
+) -> list[tuple(UUID, float)]:
     return [(p, p.stat().st_mtime) for p in session_dir.iterdir()]
 
 
