@@ -17,12 +17,11 @@ def run_agent(
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
     """
-    conversation = [{"role": "user", "content": user_input}]
     tool_definitions = [t["schema"] for t in tool_registry.values()]
     confirm_fn = confirm_fn or _cli_confirm
 
-    if session_id:
-        conversation = load_session(session_id)
+    conversation = load_session(session_id) if session_id else []
+    conversation.append({"role": "user", "content": user_input})
 
     for _ in range(max_turns):
         message = call_llm_with_tools(system_prompt, conversation, tool_definitions)

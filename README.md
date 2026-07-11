@@ -4,7 +4,7 @@
 
 The current setup installs Python-based scripts into your local bin directory
 as shell commands you can run from anywhere. Today the repo ships with
-`git-suggest`, `vector-index` and `docs`.
+`git-suggest`, `vector-index`, `search` and `agent`.
  
 
 ## What It Does
@@ -37,7 +37,9 @@ Current command:
 
 - `vector-index`: creates vector embeddings for a repository or PDF (**soon**) and can search an existing vector file by semantic similarity.
 
-- `docs`: answers questions about a single file or a scanned directory of source files.
+- `search`: semantic search over your codebase.
+
+- `agent`: interactive coding agent with session management, tool use and headless mode.
 
 ## Extending The Toolset
 

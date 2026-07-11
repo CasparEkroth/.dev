@@ -1,81 +1,116 @@
+import argparse
+from uuid import UUID, uuid4
+
 from scripts.agent.agent_loop import run_agent
 from scripts.agent.tools.registry import tool_registry
-import argparse
-from uuid import UUID
-from rich.console import Console
-from rich.markdown import Markdown
-from scripts.agent.memory import (
-    load_session,
-    get_list_of_sessions,
-    remove_session,
-    SESSIONS_DIR,
-)
-from shared.file_handler import scan_folder
-from scripts.agent.ui import format_sessions
+from scripts.agent import terminal
+from scripts.agent.memory import get_list_of_sessions, remove_session
+
+SYSTEM_PROMPT = "you are a coding agent"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agent")
 
     command = parser.add_mutually_exclusive_group()
+    command.add_argument("--resume", action="store_true", help="Resume the last session")
+    command.add_argument("--resume-id", type=UUID, help="Resume session by ID")
+    command.add_argument("--list-sessions", action="store_true", help="List sessions")
+    command.add_argument("--delete-session", type=UUID, help="Delete session by ID")
+    command.add_argument("--headless", type=str, metavar="INPUT", help="Run in headless mode")
 
-    command.add_argument(
-        "--resume", action="store_true", help="Resumes the last open session"
-    )
-    command.add_argument("--resume-id", type=UUID, help="Resumes session on id")
-    command.add_argument(
-        "--list-sessions",
-        default=False,
-        action="store_true",
-        help="show list of sessions",
-    )
-    command.add_argument("--delete-session", type=UUID, help="Delete session on id")
-    command.add_argument(
-        "--headless", type=str, metavar="INPUT", help="Run the agent in headless mode"
-    )
-
-    # Add sub-flags that work with --headless
-    parser.add_argument(
-        "--agent-type",
-        type=str,
-        default="default",
-        help="Type of agent to use (e.g., coding, research)",
-    )
-    parser.add_argument(
-        "--save-session",
-        default=False,
-        action="store_true",
-        help="Save the session after completion",
-    )
+    parser.add_argument("--agent-type", type=str, default="default")
+    parser.add_argument("--save-session", action="store_true")
 
     args = parser.parse_args()
-    console = Console()
 
     if args.list_sessions:
-        sessions = get_list_of_sessions()
-        sessions.sort(key=lambda x: x[1], reverse=True)
-        string = format_sessions(sessions)
-        console.print(Markdown(string))
+        sessions = _sorted_sessions()
+        terminal.print_sessions(sessions)
         return
 
-    if args.resume or args.resume_id:
-        sessions = get_list_of_sessions()
-        sessions.sort(key=lambda x: x[1], reverse=True)
-
-        session_id = args.resume_id if args.resume_id else sessions[0][0].name
-
-        print(session_id)
+    if args.delete_session:
+        if remove_session(args.delete_session):
+            terminal.console.print(f"[green]Deleted session {args.delete_session}[/green]")
+        else:
+            terminal.console.print(f"[red]Session {args.delete_session} not found.[/red]")
+        return
 
     if args.headless:
-        r = run_agent(
-            system_prompt="you are a coding agent",
-            user_input=args.headless,
-            tool_registry=tool_registry,
-            # agent_type=args.agent_type,
-            save_session_=args.save_session,
-        )
-        console.print(Markdown(r))
+        with terminal.spinner_context():
+            result = run_agent(
+                system_prompt=SYSTEM_PROMPT,
+                user_input=args.headless,
+                tool_registry=tool_registry,
+                confirm_fn=terminal.confirm_tool,
+                save_session_=args.save_session,
+            )
+        terminal.print_response(result)
         return
+
+    _run_interactive(args)
+
+
+def _run_interactive(args) -> None:
+    session_id = _resolve_session_id(args)
+    if session_id is None:
+        return
+
+    terminal.show_welcome()
+    prompt_session = terminal.make_prompt_session()
+
+    while True:
+        try:
+            user_input = prompt_session.prompt("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            terminal.console.print("\n[dim]Goodbye.[/dim]")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input in ("/exit", "/quit", "/q"):
+            terminal.console.print("[dim]Goodbye.[/dim]")
+            break
+
+        if user_input == "/sessions":
+            terminal.print_sessions(_sorted_sessions())
+            continue
+
+        if user_input == "/new":
+            session_id = uuid4()
+            terminal.console.print("[dim]New session started.[/dim]")
+            continue
+
+        with terminal.spinner_context():
+            result = run_agent(
+                system_prompt=SYSTEM_PROMPT,
+                user_input=user_input,
+                tool_registry=tool_registry,
+                confirm_fn=terminal.confirm_tool,
+                session_id=session_id,
+                save_session_=True,
+            )
+
+        terminal.print_response(result)
+
+
+def _resolve_session_id(args) -> UUID | None:
+    if args.resume_id:
+        return args.resume_id
+    if args.resume:
+        sessions = _sorted_sessions()
+        picked = terminal.pick_session(sessions)
+        if picked is None:
+            return None
+        return UUID(picked.name)
+    return uuid4()
+
+
+def _sorted_sessions():
+    sessions = get_list_of_sessions()
+    sessions.sort(key=lambda x: x[1], reverse=True)
+    return sessions
 
 
 if __name__ == "__main__":
