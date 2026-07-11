@@ -28,7 +28,7 @@ def save_session(
     return session_id
 
 
-def load_sessions(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> list[dict]:
+def load_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> list[dict]:
     path = session_dir / str(session_id)
     if not path.exists():
         return []
@@ -37,8 +37,8 @@ def load_sessions(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> list[di
 
 def get_list_of_sessions(
     session_dir: Path = SESSIONS_DIR,
-) -> list[UUID]:
-    return list(session_dir.iterdir())
+) -> list[(UUID, float)]:
+    return [(p, p.stat().st_mtime) for p in session_dir.iterdir()]
 
 
 def remove_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> bool:

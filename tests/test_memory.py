@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 from scripts.agent.memory import (
     save_session,
-    load_sessions,
+    load_session,
     get_list_of_sessions,
     remove_session,
 )
@@ -26,25 +26,26 @@ class TestMemoryFunctions(unittest.TestCase):
     def test_save_and_load_session(self):
         sid = save_session(self.conversation, self.session_id, self.temp_dir)
         self.assertEqual(sid, self.session_id)
-        loaded = load_sessions(self.session_id, self.temp_dir)
+        loaded = load_session(self.session_id, self.temp_dir)
         self.assertEqual(loaded, self.conversation)
 
     def test_save_appends_conversation(self):
         save_session(self.conversation, self.session_id, self.temp_dir)
         more = [{"role": "assistant", "content": "Hi"}]
         save_session(more, self.session_id, self.temp_dir)
-        loaded = load_sessions(self.session_id, self.temp_dir)
+        loaded = load_session(self.session_id, self.temp_dir)
         self.assertEqual(len(loaded), 2)
 
     def test_load_nonexistent_session(self):
-        loaded = load_sessions(uuid4(), self.temp_dir)
+        loaded = load_session(uuid4(), self.temp_dir)
         self.assertEqual(loaded, [])
 
     def test_get_list_of_sessions(self):
         save_session(self.conversation, self.session_id, self.temp_dir)
         sessions = get_list_of_sessions(self.temp_dir)
         self.assertEqual(len(sessions), 1)
-        self.assertTrue(isinstance(sessions[0], Path))
+        self.assertTrue(isinstance(sessions[0][0], Path))
+        self.assertTrue(isinstance(sessions[0][1], float))
 
     def test_remove_session(self):
         save_session(self.conversation, self.session_id, self.temp_dir)

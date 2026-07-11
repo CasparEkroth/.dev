@@ -12,7 +12,7 @@ def run_agent(
     max_turns: int = 30,
     confirm_fn=None,
     session_id: UUID = None,
-    save_session: bool = True,
+    save_session_: bool = True,
 ) -> str:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
@@ -27,7 +27,8 @@ def run_agent(
 
         tool_calls = message.get("tool_calls")
         if not tool_calls:
-            save_session(conversation, session_id=session_id)
+            if save_session_:
+                save_session(conversation, session_id=session_id)
             return message.get("content", "")
 
         for call in tool_calls:
@@ -45,7 +46,8 @@ def run_agent(
                 try:
                     result = fn(**args)
                 except Exception as e:
-                    save_session(conversation, session_id=session_id)
+                    if save_session_:
+                        save_session(conversation, session_id=session_id)
                     result = f"Error: {e}"
 
             conversation.append(
@@ -55,7 +57,7 @@ def run_agent(
                     "content": str(result),
                 }
             )
-    if save_session:
+    if save_session_:
         save_session(conversation, session_id=session_id)
     return "Max turns reached without a final answer."
 
