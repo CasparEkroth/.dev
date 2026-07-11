@@ -13,11 +13,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="agent")
 
     command = parser.add_mutually_exclusive_group()
-    command.add_argument("--resume", action="store_true", help="Resume the last session")
+    command.add_argument(
+        "--resume", action="store_true", help="Resume the last session"
+    )
     command.add_argument("--resume-id", type=UUID, help="Resume session by ID")
     command.add_argument("--list-sessions", action="store_true", help="List sessions")
     command.add_argument("--delete-session", type=UUID, help="Delete session by ID")
-    command.add_argument("--headless", type=str, metavar="INPUT", help="Run in headless mode")
+    command.add_argument(
+        "--headless", type=str, metavar="INPUT", help="Run in headless mode"
+    )
 
     parser.add_argument("--agent-type", type=str, default="default")
     parser.add_argument("--save-session", action="store_true")
@@ -31,9 +35,13 @@ def main() -> None:
 
     if args.delete_session:
         if remove_session(args.delete_session):
-            terminal.console.print(f"[green]Deleted session {args.delete_session}[/green]")
+            terminal.console.print(
+                f"[green]Deleted session {args.delete_session}[/green]"
+            )
         else:
-            terminal.console.print(f"[red]Session {args.delete_session} not found.[/red]")
+            terminal.console.print(
+                f"[red]Session {args.delete_session} not found.[/red]"
+            )
         return
 
     if args.headless:
@@ -44,6 +52,7 @@ def main() -> None:
                 tool_registry=tool_registry,
                 confirm_fn=terminal.confirm_tool,
                 save_session_=args.save_session,
+                headless=True,
             )
         terminal.print_response(result)
         return

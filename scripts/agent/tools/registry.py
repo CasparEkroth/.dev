@@ -1,5 +1,6 @@
 from scripts.agent.tools.shell import run_shell
 from shared.file_handler import read_file, write_file
+from typing import Literal
 
 tool_registry = {
     "shell": {
@@ -91,4 +92,25 @@ tool_registry = {
         "fn": write_file,
         "requires_confirmation": True,
     },
+    # "spawn_agent": {},
 }
+
+TOOLS_LIST = Literal[[t["schema"]["function"]["name"] for t in tool_registry.values()]]
+
+
+def get_registry(
+    tools: list[TOOLS_LIST] = None, allowd_tools: list[TOOLS_LIST] = None
+) -> dict:
+    if tools is None:
+        return {}
+
+    register = {k: v for k, v in tool_registry.items() if k in tools}
+
+    if allowd_tools is None:
+        return register
+
+    for k, v in register.items():
+        if k in allowd_tools:
+            v["requires_confirmation"] = False
+
+    return register

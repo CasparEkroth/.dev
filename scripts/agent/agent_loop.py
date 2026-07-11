@@ -13,6 +13,7 @@ def run_agent(
     confirm_fn=None,
     session_id: UUID = None,
     save_session_: bool = True,
+    headless: bool = False,
 ) -> str:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
@@ -39,8 +40,10 @@ def run_agent(
 
             fn = tool_registry[name]["fn"]
             need_confirmation = tool_registry[name]["requires_confirmation"]
+            if headless and need_confirmation:
+                result = f"Agnet is running in headless and dosen't have prmission to run tool {name}."
 
-            if need_confirmation and not confirm_fn(name, args):
+            elif need_confirmation and not confirm_fn(name, args):
                 result = (
                     f"User denied permission to run tool '{name}' with args {args}."
                 )
