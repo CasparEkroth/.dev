@@ -1,9 +1,7 @@
 import json
 from uuid import UUID, uuid4
 from pathlib import Path
-import os
-
-SESSIONS_DIR = Path("sessions/")
+from config import SESSIONS_DIR
 
 
 def save_session(
@@ -38,6 +36,8 @@ def load_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> list[dic
 def get_list_of_sessions(
     session_dir: Path = SESSIONS_DIR,
 ) -> list[tuple(UUID, float)]:
+    if not session_dir.exists():
+        return []
     return [(p, p.stat().st_mtime) for p in session_dir.iterdir()]
 
 

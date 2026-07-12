@@ -38,3 +38,8 @@ EXCLUDED_DIRS = {
     ".ruff_cache",
     ".cache",
 }
+
+
+# agent specific config.
+AGENTS_DIR: Path = Path("scripts/agent/agents")
+SESSIONS_DIR = Path("scripts/agent/sessions/")

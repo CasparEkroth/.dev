@@ -1,4 +1,4 @@
-from scripts.agent.tools.shell import run_shell
+from scripts.agent.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
 from typing import Literal
 
@@ -28,6 +28,33 @@ tool_registry = {
             },
         },
         "fn": run_shell,
+        "requires_confirmation": True,
+    },
+    "shell_readonly": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "shell_readonly",
+                "description": f"Execute a readonly shell command like: {READONLY_COMMANDS} and return stdout.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Command as list, e.g. ['grep', '-n', 'import asyncio']",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Optional working directory inside workspace",
+                            "default": ".",
+                        },
+                    },
+                    "required": ["command"],
+                },
+            },
+        },
+        "fn": shell_readonly,
         "requires_confirmation": True,
     },
     "read_file": {
