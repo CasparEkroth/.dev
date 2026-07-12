@@ -9,3 +9,6 @@ tree-sitter-language-pack
 pydantic_settings
 tavily-python
 rich
+prompt_toolkit
+questionary
+pytest
