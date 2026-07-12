@@ -23,7 +23,8 @@ class Agent(BaseModel):
         return cls(**config)
 
     async def run_task(self, task: str, save_session: bool = True) -> str:
-        result = run_agent(
+        return await asyncio.to_thread(
+            run_agent,
             system_prompt=self.system_prompt,
             user_input=task,
             tool_registry=get_registry(
@@ -33,7 +34,6 @@ class Agent(BaseModel):
             save_session_=save_session,
             max_turns=self.max_turns,
         )
-        return result
 
 
 def load_ready_agents() -> dict[str, Agent]:
@@ -41,10 +41,10 @@ def load_ready_agents() -> dict[str, Agent]:
 
 
 READY_AGENTS = load_ready_agents()
-AgentName = Literal[tuple(READY_AGENTS.keys())]
+AgentName = Literal.__getitem__(tuple(READY_AGENTS.keys()))
 
 
-async def spawn_agents(jobs: list[dict]) -> str:
+async def spawn_agents(jobs: list[dict]) -> dict[str, str]:
 
     async def run_one(job):
         agent = READY_AGENTS[job["agent"]]

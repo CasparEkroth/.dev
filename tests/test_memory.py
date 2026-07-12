@@ -1,8 +1,7 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from scripts.agent.memory import (
     save_session,

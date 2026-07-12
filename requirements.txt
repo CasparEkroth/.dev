@@ -11,3 +11,4 @@ tavily-python
 rich
 prompt_toolkit
 questionary
+pytest

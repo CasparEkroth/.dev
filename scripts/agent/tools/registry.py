@@ -1,6 +1,39 @@
+import asyncio
+import json
+from pathlib import Path
+
+from config import AGENTS_DIR
 from scripts.agent.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
 from typing import Literal
+
+_READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
+
+
+def _load_agent_descriptions() -> dict[str, str]:
+    agents_dir = AGENTS_DIR
+    result = {}
+    for f in sorted(agents_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+            result[f.stem] = data.get("description", f.stem)
+        except Exception:
+            pass
+    return result
+
+
+_AGENT_DESCRIPTIONS = _load_agent_descriptions()
+_AGENT_DESCRIPTION_STR = (
+    "\n".join(f"- {name}: {desc}" for name, desc in _AGENT_DESCRIPTIONS.items())
+    or "No agents configured."
+)
+
+
+def _spawn_agents(*args, **kwargs):
+    from scripts.agent.tools.agent import spawn_agents
+
+    return asyncio.run(spawn_agents(*args, **kwargs))
+
 
 tool_registry = {
     "shell": {
@@ -35,7 +68,9 @@ tool_registry = {
             "type": "function",
             "function": {
                 "name": "shell_readonly",
-                "description": f"Execute a readonly shell command like: {READONLY_COMMANDS} and return stdout.",
+                "description": "Execute a readonly shell command like: "
+                + _READONLY_CMDS_STR
+                + " and return stdout.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -119,25 +154,63 @@ tool_registry = {
         "fn": write_file,
         "requires_confirmation": True,
     },
-    # "spawn_agent": {},
+    "spawn_agents": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "spawn_agents",
+                "description": "Spawn one or more agents to run tasks concurrently. Blocks until all agents finish and returns their results.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "jobs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "agent": {
+                                        "type": "string",
+                                        "enum": list(_AGENT_DESCRIPTIONS.keys()),
+                                        "description": "Name of the agent to run. Available agents:\n"
+                                        + _AGENT_DESCRIPTION_STR,
+                                    },
+                                    "task": {
+                                        "type": "string",
+                                        "description": "The task/instruction to give to the agent",
+                                    },
+                                },
+                                "required": ["agent", "task"],
+                            },
+                            "description": "List of jobs to run in parallel",
+                        },
+                    },
+                    "required": ["jobs"],
+                },
+            },
+        },
+        "fn": _spawn_agents,
+        "requires_confirmation": True,
+    },
 }
 
-TOOLS_LIST = Literal[[t["schema"]["function"]["name"] for t in tool_registry.values()]]
+TOOLS_LIST = Literal.__getitem__(
+    tuple(t["schema"]["function"]["name"] for t in tool_registry.values())
+)
 
 
 def get_registry(
-    tools: list[TOOLS_LIST] = None, allowd_tools: list[TOOLS_LIST] = None
+    tools: list[str] | None = None, allowed_tools: list[str] | None = None
 ) -> dict:
     if tools is None:
         return {}
 
     register = {k: v for k, v in tool_registry.items() if k in tools}
 
-    if allowd_tools is None:
+    if allowed_tools is None:
         return register
 
     for k, v in register.items():
-        if k in allowd_tools:
+        if k in allowed_tools:
             v["requires_confirmation"] = False
 
     return register

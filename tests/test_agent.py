@@ -1,9 +1,13 @@
 import json
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
 
-from scripts.agent.tools.agent import Agent, load_ready_agents, spawn_agnets, READY_AGENTS
+from scripts.agent.tools.agent import (
+    Agent,
+    load_ready_agents,
+    spawn_agents,
+    READY_AGENTS,
+)
 
 
 def test_agent_from_file(tmp_path):
