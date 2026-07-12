@@ -1,16 +1,16 @@
 import argparse
 from uuid import UUID, uuid4
 
-from scripts.agent.agent_loop import run_agent
-from scripts.agent.tools.registry import tool_registry
-from scripts.agent import terminal
-from scripts.agent.memory import get_list_of_sessions, remove_session
+from scripts.amon.agent_loop import run_agent
+from scripts.amon.tools.registry import tool_registry
+from scripts.amon import terminal
+from scripts.amon.memory import get_list_of_sessions, remove_session
 
 SYSTEM_PROMPT = "you are a coding agent"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="agent")
+    parser = argparse.ArgumentParser(prog="amon")
 
     command = parser.add_mutually_exclusive_group()
     command.add_argument(

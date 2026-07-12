@@ -1,8 +1,8 @@
 import json
 import asyncio
 from pathlib import Path
-from scripts.agent.agent_loop import run_agent
-from scripts.agent.tools.registry import get_registry
+from scripts.amon.agent_loop import run_agent
+from scripts.amon.tools.registry import get_registry
 from config import AGENTS_DIR
 from pydantic import BaseModel, Field
 from typing import Any, Literal

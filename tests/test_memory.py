@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from scripts.agent.memory import (
+from scripts.amon.memory import (
     save_session,
     load_session,
     get_list_of_sessions,

@@ -62,7 +62,7 @@ def call_llm_with_tools(
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=60,
+        timeout=(10, 180),
     )
     r.raise_for_status()
     return r.json()["choices"][0]["message"]

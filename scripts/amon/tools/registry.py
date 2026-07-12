@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from config import AGENTS_DIR
-from scripts.agent.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
+from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
 from typing import Literal
 

@@ -2,7 +2,7 @@ import json
 from unittest.mock import patch, MagicMock
 import pytest
 
-from scripts.agent.tools.agent import (
+from scripts.amon.tools.agent import (
     Agent,
     load_ready_agents,
     spawn_agents,
