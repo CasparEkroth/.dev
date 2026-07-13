@@ -7,6 +7,8 @@ from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMAND
 from shared.file_handler import read_file, write_file
 from typing import Literal
 
+from scripts.amon.tools.skills import load_skill
+
 _READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
 
 
@@ -189,6 +191,27 @@ tool_registry = {
             },
         },
         "fn": _spawn_agents,
+        "requires_confirmation": True,
+    },
+    "load_skill": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "load_skill",
+                "description": "Load a skill by name and return its content plus discovered resources.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Name of the skill directory under SKILLS_DIR",
+                        },
+                    },
+                    "required": ["skill_name"],
+                },
+            },
+        },
+        "fn": load_skill,
         "requires_confirmation": True,
     },
 }

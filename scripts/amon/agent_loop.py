@@ -9,6 +9,7 @@ def run_agent(
     system_prompt: str,
     user_input: str,
     tool_registry: dict,
+    skill_catalog: dict,
     max_turns: int = 30,
     confirm_fn=None,
     session_id: UUID = None,
@@ -21,6 +22,7 @@ def run_agent(
     tool_definitions = [t["schema"] for t in tool_registry.values()]
     confirm_fn = confirm_fn or _cli_confirm
 
+    system_prompt = build_system_prompt(system_prompt, skill_catalog)
     conversation = load_session(session_id) if session_id else []
     conversation.append({"role": "user", "content": user_input})
 
@@ -71,3 +73,13 @@ def _cli_confirm(tool_name: str, args: dict) -> bool:
     print(f"\n⚠️  Agent wants to call: {tool_name}({args})")
     answer = input("Allow? [y/N]: ").strip().lower()
     return answer == "y"
+
+
+def build_system_prompt(base_prompt: str, skill_catalog: list[dict]) -> str:
+    skills_section = "\n".join(
+        f"- {s['name']}: {s['description']}" for s in skill_catalog
+    )
+    return (
+        base_prompt
+        + f"\n\n## Available Skills\n{skills_section}\n\nCall `load_skill` to get full instructions before executing a skill."
+    )

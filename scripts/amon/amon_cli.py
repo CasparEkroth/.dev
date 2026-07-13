@@ -5,6 +5,7 @@ from scripts.amon.agent_loop import run_agent
 from scripts.amon.tools.registry import tool_registry
 from scripts.amon import terminal
 from scripts.amon.memory import get_list_of_sessions, remove_session
+from scripts.amon.tools.skills import skill_catalog
 
 SYSTEM_PROMPT = "you are a coding agent"
 
@@ -50,6 +51,7 @@ def main() -> None:
                 system_prompt=SYSTEM_PROMPT,
                 user_input=args.headless,
                 tool_registry=tool_registry,
+                skill_catalog=skill_catalog,
                 confirm_fn=terminal.confirm_tool,
                 save_session_=args.save_session,
                 headless=True,
@@ -102,6 +104,7 @@ def _run_interactive(args) -> None:
                 system_prompt=SYSTEM_PROMPT,
                 user_input=user_input,
                 tool_registry=tool_registry,
+                skill_catalog=skill_catalog,
                 confirm_fn=terminal.confirm_tool,
                 session_id=session_id,
                 save_session_=True,

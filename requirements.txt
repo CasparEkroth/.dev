@@ -12,4 +12,4 @@ rich
 prompt_toolkit
 questionary
 pytest
-frontmatter
+python-frontmatter
