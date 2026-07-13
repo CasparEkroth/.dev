@@ -116,7 +116,7 @@ def _resolve_session_id(args) -> UUID | None:
     if args.resume:
         sessions = _sorted_sessions()
         picked = terminal.pick_session(sessions)
-        if picked == "[cancel]":
+        if picked == "[cancel]" or picked is None:
             return None
         return UUID(picked.name)
     return uuid4()

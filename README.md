@@ -4,7 +4,7 @@
 
 The current setup installs Python-based scripts into your local bin directory
 as shell commands you can run from anywhere. Today the repo ships with
-`git-suggest`, `vector-index`, `search` and `agent`.
+`git-suggest`, `vector-index`, `search` and `amon`.
  
 
 ## What It Does
@@ -39,7 +39,7 @@ Current command:
 
 - `search`: semantic search over your codebase.
 
-- `agent`: interactive coding agent with session management, tool use and headless mode.
+- `amon`: interactive coding agent with session management, tool use and headless mode.
 
 ## Extending The Toolset
 
