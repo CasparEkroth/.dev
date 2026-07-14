@@ -6,7 +6,6 @@ from scripts.amon.tools.registry import get_registry
 from config import AGENTS_DIR
 from pydantic import BaseModel, Field
 from typing import Any, Literal
-
 from scripts.amon.tools.skills import catalog_for_agent
 
 
@@ -17,7 +16,7 @@ class Agent(BaseModel):
     tools: list[str] | dict[str, Any]
     allowed_tools: list[str]
     max_turns: int = Field(gt=0)
-    allowed_skills: list[str]
+    allowed_skills: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_file(cls, config_path: Path) -> "Agent":
@@ -33,7 +32,7 @@ class Agent(BaseModel):
             tool_registry=get_registry(
                 tools=self.tools, allowed_tools=self.allowed_tools
             ),
-            skill_catalog=catalog_for_agent(self.allowed_skills)
+            skill_catalog=catalog_for_agent(self.allowed_skills),
             headless=True,
             save_session_=save_session,
             max_turns=self.max_turns,

@@ -23,17 +23,19 @@ def run_agent(
     confirm_fn = confirm_fn or _cli_confirm
 
     system_prompt = build_system_prompt(system_prompt, skill_catalog)
-    conversation = load_session(session_id) if session_id else []
-    conversation.append({"role": "user", "content": user_input})
+    history = load_session(session_id) if session_id else []
+    conversation = history + [{"role": "user", "content": user_input}]
+    new_messages = [{"role": "user", "content": user_input}]
 
     for _ in range(max_turns):
         message = call_llm_with_tools(system_prompt, conversation, tool_definitions)
         conversation.append(message)
+        new_messages.append(message)
 
         tool_calls = message.get("tool_calls")
         if not tool_calls:
             if save_session_:
-                save_session(conversation, session_id=session_id)
+                save_session(new_messages, session_id=session_id)
             return message.get("content", "")
 
         for call in tool_calls:
@@ -43,29 +45,27 @@ def run_agent(
             fn = tool_registry[name]["fn"]
             need_confirmation = tool_registry[name]["requires_confirmation"]
             if headless and need_confirmation:
-                result = f"Agnet is running in headless and dosen't have prmission to run tool {name}."
-
+                result = f"Agent is running in headless mode and doesn't have permission to run tool {name}."
             elif need_confirmation and not confirm_fn(name, args):
-                result = (
-                    f"User denied permission to run tool '{name}' with args {args}."
-                )
+                result = f"User denied permission to run tool '{name}' with args {args}."
             else:
                 try:
                     result = fn(**args)
                 except Exception as e:
                     if save_session_:
-                        save_session(conversation, session_id=session_id)
+                        save_session(new_messages, session_id=session_id)
                     result = f"Error: {e}"
 
-            conversation.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": str(result),
-                }
-            )
+            tool_msg = {
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": str(result),
+            }
+            conversation.append(tool_msg)
+            new_messages.append(tool_msg)
+
     if save_session_:
-        save_session(conversation, session_id=session_id)
+        save_session(new_messages, session_id=session_id)
     return "Max turns reached without a final answer."
 
 

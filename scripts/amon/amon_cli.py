@@ -15,7 +15,7 @@ def main() -> None:
 
     command = parser.add_mutually_exclusive_group()
     command.add_argument(
-        "--resume", action="store_true", help="Resume the last session"
+        "--resume", "-r", action="store_true", help="Resume the last session"
     )
     command.add_argument("--resume-id", type=UUID, help="Resume session by ID")
     command.add_argument("--list-sessions", action="store_true", help="List sessions")
@@ -67,7 +67,7 @@ def _run_interactive(args) -> None:
     if session_id is None:
         return
 
-    terminal.show_welcome()
+    terminal.show_welcome(session_id)
     prompt_session = terminal.make_prompt_session()
 
     while True:
