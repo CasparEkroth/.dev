@@ -2,11 +2,8 @@ import subprocess
 
 READONLY_COMMANDS = {
     "ls",
-    "cat",
     "grep",
     "find",
-    "head",
-    "tail",
     "wc",
     "tree",
     "pwd",

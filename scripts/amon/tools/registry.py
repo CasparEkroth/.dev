@@ -32,7 +32,7 @@ _AGENT_DESCRIPTION_STR = (
 
 
 def _spawn_agents(*args, **kwargs):
-    from scripts.agent.tools.agent import spawn_agents
+    from scripts.amon.tools.agent import spawn_agents
 
     return asyncio.run(spawn_agents(*args, **kwargs))
 

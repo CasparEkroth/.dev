@@ -30,6 +30,10 @@ def builde_skill_catalog(skills_dir: Path = SKILLS_DIR) -> list[dict]:
 skill_catalog = builde_skill_catalog()
 
 
+def get_skill_names() -> list[str]:
+    return [c["name"] for c in skill_catalog]
+
+
 def load_skill(skill_name: str, skills_dir: Path = SKILLS_DIR) -> str:
     path = skills_dir / skill_name
     cwd = Path.cwd()

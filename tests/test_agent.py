@@ -33,7 +33,7 @@ def test_load_ready_agents(monkeypatch):
     mock_file.stem = "mock_agent"
     mock_dir.glob.return_value = [mock_file]
 
-    with patch("scripts.agent.tools.agent.AGENTS_DIR", mock_dir):
+    with patch("scripts.agent.tools.amon.AGENTS_DIR", mock_dir):
         with patch.object(Agent, "from_file", return_value=MagicMock()):
             agents = load_ready_agents()
             assert "mock_agent" in agents
