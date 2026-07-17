@@ -15,6 +15,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 from config import SESSIONS_DIR
 from scripts.amon.memory import load_session
+from scripts.amon.tools.agent import READY_AGENTS, Agent
 
 console = Console()
 _live: "Live | None" = None
@@ -24,23 +25,39 @@ def show_welcome(session_id: UUID) -> None:
     console.print(
         Panel(
             "[bold cyan]Agent[/bold cyan]  [dim]AI coding assistant[/dim]",
-            subtitle="[dim]/exit · /new · /sessions[/dim]",
+            subtitle="[dim]/exit · /agent · /new · /sessions[/dim]",
             border_style="cyan",
             expand=False,
         )
     )
     history = load_session(session_id)
     if history:
-        console.print(Panel("[bold]Previous conversation[/bold]", border_style="dim", expand=False))
+        console.print(
+            Panel(
+                "[bold]Previous conversation[/bold]", border_style="dim", expand=False
+            )
+        )
         for msg in history:
             role = msg.get("role")
             content = msg.get("content") or ""
             if role == "tool" or not content:
                 continue
             if role == "user":
-                console.print(Panel(Markdown(content), title="[bold cyan]You[/bold cyan]", border_style="cyan"))
+                console.print(
+                    Panel(
+                        Markdown(content),
+                        title="[bold cyan]You[/bold cyan]",
+                        border_style="cyan",
+                    )
+                )
             elif role == "assistant":
-                console.print(Panel(Markdown(content), title="[bold green]Agent[/bold green]", border_style="green"))
+                console.print(
+                    Panel(
+                        Markdown(content),
+                        title="[bold green]Agent[/bold green]",
+                        border_style="green",
+                    )
+                )
 
 
 @contextmanager
@@ -114,3 +131,24 @@ def print_sessions(sessions: list[tuple[Path, float]]) -> None:
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
         )
     console.print(table)
+
+
+def pick_agents(agents: dict[str, Agent] = READY_AGENTS) -> str | None:
+    if not agents:
+        console.print("[dim]No Agnets found.[/dim]")
+        return None
+    choices = [
+        questionary.Choice(
+            title=k,
+            value=k,
+        )
+        for k, v in list(agents.items())
+    ]
+    choices.append(questionary.Choice(title="[cancel]", value=None))
+    return questionary.select("Pick a agent to use:", choices=choices).ask()
+
+
+def print_headless_result(results: dict[str, str]) -> None:
+    """Pretty-print results returned by spawn_agents in --headless mode."""
+    for key, value in results.items():
+        console.print(Panel(Markdown(value), title=f"[bold cyan]{key}[/bold cyan]"))

@@ -69,6 +69,7 @@ def call_llm_with_tools(
     system_prompt: str,
     conversation_history: dict,
     tool_definitions: dict,
+    force_tool: bool = False,
 ) -> dict:
     messages = [{"role": "system", "content": system_prompt}] + conversation_history
 
@@ -78,7 +79,7 @@ def call_llm_with_tools(
     }
     if tool_definitions:
         payload["tools"] = tool_definitions
-        payload["tool_choice"] = "auto"
+        payload["tool_choice"] = "required" if force_tool else "auto"
 
     endpoint = settings.LLM_BASE_URL.rstrip("/")
     if not endpoint.endswith(("/chat/completions", "/responses")):
@@ -94,7 +95,9 @@ def call_llm_with_tools(
         timeout=(10, 180),
     )
     r.raise_for_status()
-    message = r.json()["choices"][0]["message"]
+    raw = r.json()
+    # print(f"[DEBUG llm] tools_sent={len(payload.get('tools', []))} tool_choice={payload.get('tool_choice')} finish_reason={raw['choices'][0].get('finish_reason')}")
+    message = raw["choices"][0]["message"]
 
     if not message.get("tool_calls") and message.get("content"):
         parsed = _parse_xml_tool_calls(message["content"])

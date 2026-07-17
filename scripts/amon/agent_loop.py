@@ -27,12 +27,13 @@ def run_agent(
     conversation = history + [{"role": "user", "content": user_input}]
     new_messages = [{"role": "user", "content": user_input}]
 
-    for _ in range(max_turns):
-        message = call_llm_with_tools(system_prompt, conversation, tool_definitions)
+    for turn in range(max_turns):
+        message = call_llm_with_tools(system_prompt, conversation, tool_definitions, force_tool=turn == 0 and bool(tool_definitions))
         conversation.append(message)
         new_messages.append(message)
 
         tool_calls = message.get("tool_calls")
+        # print(f"[DEBUG] content={repr(message.get('content'))[:120]} tool_calls={bool(tool_calls)}")
         if not tool_calls:
             if save_session_:
                 save_session(new_messages, session_id=session_id)

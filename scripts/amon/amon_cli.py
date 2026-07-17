@@ -1,11 +1,16 @@
 import argparse
 from uuid import UUID, uuid4
 
+
+from scripts.amon.tools.agent import spawn_agents, READY_AGENTS
 from scripts.amon.agent_loop import run_agent
-from scripts.amon.tools.registry import tool_registry
 from scripts.amon import terminal
 from scripts.amon.memory import get_list_of_sessions, remove_session
-from scripts.amon.tools.skills import skill_catalog
+from scripts.amon.tools.registry import get_registry
+
+import asyncio
+
+from scripts.amon.tools.skills import catalog_for_agent
 
 SYSTEM_PROMPT = "you are a coding agent"
 
@@ -24,7 +29,7 @@ def main() -> None:
         "--headless", type=str, metavar="INPUT", help="Run in headless mode"
     )
 
-    parser.add_argument("--agent-type", type=str, default="default")
+    parser.add_argument("--agent", type=str, default="default")
     parser.add_argument("--save-session", action="store_true")
 
     args = parser.parse_args()
@@ -47,16 +52,10 @@ def main() -> None:
 
     if args.headless:
         with terminal.spinner_context():
-            result = run_agent(
-                system_prompt=SYSTEM_PROMPT,
-                user_input=args.headless,
-                tool_registry=tool_registry,
-                skill_catalog=skill_catalog,
-                confirm_fn=terminal.confirm_tool,
-                save_session_=args.save_session,
-                headless=True,
+            result = asyncio.run(
+                spawn_agents([{"agent": args.agent, "task": args.headless}])
             )
-        terminal.print_response(result)
+        terminal.print_headless_result(result)
         return
 
     _run_interactive(args)
@@ -69,6 +68,11 @@ def _run_interactive(args) -> None:
 
     terminal.show_welcome(session_id)
     prompt_session = terminal.make_prompt_session()
+    agent = READY_AGENTS.get(args.agent, None)
+
+    if agent is None:
+        terminal.console.print(f"Error: {args.agent} is not a saved agent")
+        return
 
     while True:
         try:
@@ -83,6 +87,15 @@ def _run_interactive(args) -> None:
         if user_input in ("/exit", "/quit", "/q"):
             terminal.console.print("[dim]Goodbye.[/dim]")
             break
+
+        if user_input == ("/agent"):
+            t_agent = terminal.pick_agents()
+            if t_agent is None or t_agent == "[cancel]":
+                terminal.console.print(f"[dim]No agent picket.[/dim]")
+                terminal.console.print(f"[dim]Current agent: {agent.name}")
+                continue
+            agent = READY_AGENTS.get(t_agent)
+            continue
 
         if user_input == "/sessions":
             terminal.print_sessions(_sorted_sessions())
@@ -101,10 +114,10 @@ def _run_interactive(args) -> None:
 
         with terminal.spinner_context():
             result = run_agent(
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=agent.system_prompt,
                 user_input=user_input,
-                tool_registry=tool_registry,
-                skill_catalog=skill_catalog,
+                tool_registry=get_registry(tools=agent.tools, allowed_tools=agent.allowed_tools),
+                skill_catalog=catalog_for_agent(agent.allowed_skills),
                 confirm_fn=terminal.confirm_tool,
                 session_id=session_id,
                 save_session_=True,
