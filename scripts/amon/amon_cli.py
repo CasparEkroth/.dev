@@ -1,11 +1,12 @@
 import argparse
+from ast import Delete
 from uuid import UUID, uuid4
 
 
 from scripts.amon.tools.agent import spawn_agents, READY_AGENTS
 from scripts.amon.agent_loop import run_agent
 from scripts.amon import terminal
-from scripts.amon.memory import get_list_of_sessions, remove_session
+from scripts.amon.memory import clear_sessions, get_list_of_sessions, remove_session
 from scripts.amon.tools.registry import get_registry
 
 import asyncio
@@ -25,6 +26,13 @@ def main() -> None:
     command.add_argument("--resume-id", type=UUID, help="Resume session by ID")
     command.add_argument("--list-sessions", action="store_true", help="List sessions")
     command.add_argument("--delete-session", type=UUID, help="Delete session by ID")
+    command.add_argument(
+        "--keep-N-sessions",
+        "-keep-n",
+        type=int,
+        default=5,
+        help="Keeps only the N latest sessions",
+    )
     command.add_argument(
         "--headless", type=str, metavar="INPUT", help="Run in headless mode"
     )
@@ -48,6 +56,15 @@ def main() -> None:
             terminal.console.print(
                 f"[red]Session {args.delete_session} not found.[/red]"
             )
+        return
+
+    if args.keep_N_sessions:
+        rm_ses = clear_sessions(args.keep_N_sessions)
+        if rm_ses:
+            names = "\n".join(s[0].name for s in rm_ses)
+            terminal.console.print(f"[green]Deleted sessions:\n{names}")
+        else:
+            terminal.console.print("[yellow]No sessions to delete.")
         return
 
     if args.headless:
@@ -116,14 +133,17 @@ def _run_interactive(args) -> None:
             result = run_agent(
                 system_prompt=agent.system_prompt,
                 user_input=user_input,
-                tool_registry=get_registry(tools=agent.tools, allowed_tools=agent.allowed_tools),
+                tool_registry=get_registry(
+                    tools=agent.tools, allowed_tools=agent.allowed_tools
+                ),
                 skill_catalog=catalog_for_agent(agent.allowed_skills),
                 confirm_fn=terminal.confirm_tool,
+                stream_actions=terminal.stream_action,
                 session_id=session_id,
                 save_session_=True,
             )
 
-        terminal.print_response(result)
+        # terminal.print_response(result)
 
 
 def _resolve_session_id(args) -> UUID | None:

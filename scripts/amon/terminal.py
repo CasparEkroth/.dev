@@ -112,6 +112,37 @@ def confirm_tool(name: str, args: dict) -> bool:
             _live.start()
 
 
+def stream_action(event: str, data: dict) -> None:
+    if event == "reasoning":
+        console.print(
+            Panel(
+                Markdown(data.get("content", "")),
+                title="[bold green]Agent[/bold green]",
+                border_style="green",
+            )
+        )
+    elif event == "tool_call":
+        console.print(
+            Panel(
+                f"[bold]{data.get('name')}[/bold]\n[dim]{data.get('args')}[/dim]",
+                title="[cyan]→ Tool[/cyan]",
+                border_style="cyan",
+            )
+        )
+    elif event == "tool_result":
+        content = str(data.get("content", ""))
+        max_len = 600
+        if len(content) > max_len:
+            content = content[:max_len] + "\n... (truncated, " + str(len(content)) + " chars total)"
+        console.print(
+            Panel(
+                content,
+                title=f"[dim]← Result from {data.get('name', 'tool')}[/dim]",
+                border_style="dim",
+            )
+        )
+
+
 def print_response(text: str) -> None:
     console.print(Markdown(text))
 
