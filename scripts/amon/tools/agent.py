@@ -7,7 +7,7 @@ from scripts.amon.tools.registry import get_registry, tool_registry
 from config import AGENTS_DIR
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing import Any, Literal
-from scripts.amon.tools.skills import catalog_for_agent, get_skill_names
+from scripts.amon.tools.skills import catalog_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +29,6 @@ class Agent(BaseModel):
                 data["tools"] = list(tool_registry.keys())
             if data.get("allowed_tools") in (["*"], "*"):
                 data["allowed_tools"] = list(tool_registry.keys())
-            if data.get("allowed_skills") in (["*"], "*"):
-                data["allowed_skills"] = get_skill_names()
 
         return data
 

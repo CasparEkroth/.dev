@@ -1,5 +1,4 @@
 import argparse
-from ast import Delete
 from uuid import UUID, uuid4
 
 
@@ -30,7 +29,6 @@ def main() -> None:
         "--keep-N-sessions",
         "-keep-n",
         type=int,
-        default=5,
         help="Keeps only the N latest sessions",
     )
     command.add_argument(
@@ -108,7 +106,7 @@ def _run_interactive(args) -> None:
         if user_input == ("/agent"):
             t_agent = terminal.pick_agents()
             if t_agent is None or t_agent == "[cancel]":
-                terminal.console.print(f"[dim]No agent picket.[/dim]")
+                terminal.console.print("[dim]No agent picket.[/dim]")
                 terminal.console.print(f"[dim]Current agent: {agent.name}")
                 continue
             agent = READY_AGENTS.get(t_agent)
@@ -130,7 +128,7 @@ def _run_interactive(args) -> None:
             continue
 
         with terminal.spinner_context():
-            result = run_agent(
+            run_agent(
                 system_prompt=agent.system_prompt,
                 user_input=user_input,
                 tool_registry=get_registry(

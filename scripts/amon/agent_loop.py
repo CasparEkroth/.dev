@@ -93,9 +93,9 @@ def _cli_confirm(tool_name: str, args: dict) -> bool:
 
 def build_system_prompt(base_prompt: str, skill_catalog: list[dict]) -> str:
     skills_section = "\n".join(
-        f"- {s['name']}: {s['description']}" for s in skill_catalog
+        f"- {s['name']} (skill_path: {s['path']}): {s['description']}" for s in skill_catalog
     )
     return (
         base_prompt
-        + f"\n\n## Available Skills\n{skills_section}\n\nCall `load_skill` to get full instructions before executing a skill."
+        + f"\n\n## Available Skills\n{skills_section}\n\nWhen the user's request matches one of the above skills, your FIRST tool call MUST be `load_skill(skill_path=<path>)` using the skill_path shown. Do not run any shell commands or read any files before loading the skill."
     )

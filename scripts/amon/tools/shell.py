@@ -48,5 +48,5 @@ def run_shell(command: list[str], cwd: str = ".") -> str:
         timeout=30,
     )
     if r.returncode != 0:
-        return f"Command failed (exit {r.returncode}):\n{r.stderr}"
+        return f"Command failed (exit {r.returncode}):\n{r.stdout}{r.stderr}"
     return r.stdout

@@ -13,7 +13,6 @@ from rich.spinner import Spinner
 import questionary
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
-from config import SESSIONS_DIR
 from scripts.amon.memory import load_session
 from scripts.amon.tools.agent import READY_AGENTS, Agent
 
@@ -133,7 +132,12 @@ def stream_action(event: str, data: dict) -> None:
         content = str(data.get("content", ""))
         max_len = 600
         if len(content) > max_len:
-            content = content[:max_len] + "\n... (truncated, " + str(len(content)) + " chars total)"
+            content = (
+                content[:max_len]
+                + "\n... (truncated, "
+                + str(len(content))
+                + " chars total)"
+            )
         console.print(
             Panel(
                 content,

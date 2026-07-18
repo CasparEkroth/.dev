@@ -1,6 +1,5 @@
 import asyncio
 import json
-from pathlib import Path
 
 from config import AGENTS_DIR
 from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
@@ -198,16 +197,16 @@ tool_registry = {
             "type": "function",
             "function": {
                 "name": "load_skill",
-                "description": "Load a skill by name and return its content plus discovered resources.",
+                "description": "Load a skill by path and return its content plus discovered resources.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "skill_name": {
+                        "skill_path": {
                             "type": "string",
-                            "description": "Name of the skill directory under SKILLS_DIR",
+                            "description": "Path to the skill directory (e.g. '.amon/skills/python-validation')",
                         },
                     },
-                    "required": ["skill_name"],
+                    "required": ["skill_path"],
                 },
             },
         },
