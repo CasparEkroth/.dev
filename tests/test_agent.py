@@ -6,7 +6,6 @@ from scripts.amon.tools.agent import (
     Agent,
     load_ready_agents,
     spawn_agents,
-    READY_AGENTS,
 )
 
 
@@ -41,6 +40,8 @@ def test_load_ready_agents(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_spawn_agents():
+    from scripts.amon.tools.registry import READY_AGENTS
+
     mock_agent = MagicMock()
     mock_agent.run_task.return_value = "result"
     with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):

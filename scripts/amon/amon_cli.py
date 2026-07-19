@@ -2,11 +2,11 @@ import argparse
 from uuid import UUID, uuid4
 
 
-from scripts.amon.tools.agent import spawn_agents, READY_AGENTS
+from scripts.amon.tools.agent import spawn_agents
+from scripts.amon.tools.registry import get_registry, READY_AGENTS
 from scripts.amon.agent_loop import run_agent
 from scripts.amon import terminal
 from scripts.amon.memory import clear_sessions, get_list_of_sessions, remove_session
-from scripts.amon.tools.registry import get_registry
 
 import asyncio
 

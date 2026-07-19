@@ -1,7 +1,6 @@
 import asyncio
-import json
 
-from config import AGENTS_DIR
+from scripts.amon.tools.agent import load_ready_agents
 from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
 from typing import Literal
@@ -11,31 +10,14 @@ from scripts.amon.tools.skills import load_skill
 _READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
 
 
-def _load_agent_descriptions() -> dict[str, str]:
-    agents_dir = AGENTS_DIR
-    result = {}
-    for f in sorted(agents_dir.glob("*.json")):
-        try:
-            data = json.loads(f.read_text())
-            result[f.stem] = data.get("description", f.stem)
-        except Exception:
-            pass
-    return result
-
-
-_AGENT_DESCRIPTIONS = _load_agent_descriptions()
-_AGENT_DESCRIPTION_STR = (
-    "\n".join(f"- {name}: {desc}" for name, desc in _AGENT_DESCRIPTIONS.items())
-    or "No agents configured."
-)
-
-
 def _spawn_agents(*args, **kwargs):
     from scripts.amon.tools.agent import spawn_agents
 
     return asyncio.run(spawn_agents(*args, **kwargs))
 
 
+# tool_registry must be defined before load_ready_agents() is called,
+# because Agent.expand_wildcards lazily imports tool_registry from this module.
 tool_registry = {
     "shell": {
         "schema": {
@@ -155,43 +137,6 @@ tool_registry = {
         "fn": write_file,
         "requires_confirmation": True,
     },
-    "spawn_agents": {
-        "schema": {
-            "type": "function",
-            "function": {
-                "name": "spawn_agents",
-                "description": "Spawn one or more agents to run tasks concurrently. Blocks until all agents finish and returns their results.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "jobs": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "agent": {
-                                        "type": "string",
-                                        "enum": list(_AGENT_DESCRIPTIONS.keys()),
-                                        "description": "Name of the agent to run. Available agents:\n"
-                                        + _AGENT_DESCRIPTION_STR,
-                                    },
-                                    "task": {
-                                        "type": "string",
-                                        "description": "The task/instruction to give to the agent",
-                                    },
-                                },
-                                "required": ["agent", "task"],
-                            },
-                            "description": "List of jobs to run in parallel",
-                        },
-                    },
-                    "required": ["jobs"],
-                },
-            },
-        },
-        "fn": _spawn_agents,
-        "requires_confirmation": True,
-    },
     "load_skill": {
         "schema": {
             "type": "function",
@@ -213,6 +158,51 @@ tool_registry = {
         "fn": load_skill,
         "requires_confirmation": True,
     },
+}
+
+# Load agents after tool_registry exists so the wildcard validator can import it.
+READY_AGENTS = load_ready_agents()
+_AGENT_DESCRIPTION_STR = (
+    "\n".join(f"- {name}: {agent.description}" for name, agent in READY_AGENTS.items())
+    or "No agents configured."
+)
+
+tool_registry["spawn_agents"] = {
+    "schema": {
+        "type": "function",
+        "function": {
+            "name": "spawn_agents",
+            "description": "Spawn one or more agents to run tasks concurrently. Blocks until all agents finish and returns their results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "jobs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "agent": {
+                                    "type": "string",
+                                    "enum": list(READY_AGENTS.keys()),
+                                    "description": "Name of the agent to run. Available agents:\n"
+                                    + _AGENT_DESCRIPTION_STR,
+                                },
+                                "task": {
+                                    "type": "string",
+                                    "description": "The task/instruction to give to the agent",
+                                },
+                            },
+                            "required": ["agent", "task"],
+                        },
+                        "description": "List of jobs to run in parallel",
+                    },
+                },
+                "required": ["jobs"],
+            },
+        },
+    },
+    "fn": _spawn_agents,
+    "requires_confirmation": True,
 }
 
 TOOLS_LIST = Literal.__getitem__(

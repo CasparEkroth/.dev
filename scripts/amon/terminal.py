@@ -14,7 +14,8 @@ import questionary
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 from scripts.amon.memory import load_session
-from scripts.amon.tools.agent import READY_AGENTS, Agent
+from scripts.amon.tools.agent import Agent
+from scripts.amon.tools.registry import READY_AGENTS
 
 console = Console()
 _live: "Live | None" = None

@@ -1,13 +1,14 @@
 import json
+import os
 import asyncio
 import logging
 from pathlib import Path
 from scripts.amon.agent_loop import run_agent
-from scripts.amon.tools.registry import get_registry, tool_registry
-from config import AGENTS_DIR
+from config import default_path_agent
 from pydantic import BaseModel, Field, ValidationError, model_validator
-from typing import Any, Literal
+from typing import Any
 from scripts.amon.tools.skills import catalog_for_agent
+
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,12 @@ class Agent(BaseModel):
     @classmethod
     def expand_wildcards(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            if data.get("tools") in (["*"], "*"):
-                data["tools"] = list(tool_registry.keys())
-            if data.get("allowed_tools") in (["*"], "*"):
-                data["allowed_tools"] = list(tool_registry.keys())
-
+            if data.get("tools") in (["*"], "*") or data.get("allowed_tools") in (["*"], "*"):
+                from scripts.amon.tools.registry import tool_registry
+                if data.get("tools") in (["*"], "*"):
+                    data["tools"] = list(tool_registry.keys())
+                if data.get("allowed_tools") in (["*"], "*"):
+                    data["allowed_tools"] = list(tool_registry.keys())
         return data
 
     @classmethod
@@ -45,6 +47,7 @@ class Agent(BaseModel):
             raise ValueError(f"Invalid agent config in {config_path}: {e}") from e
 
     async def run_task(self, task: str, save_session: bool = True) -> str:
+        from scripts.amon.tools.registry import get_registry
         return await asyncio.to_thread(
             run_agent,
             system_prompt=self.system_prompt,
@@ -61,19 +64,21 @@ class Agent(BaseModel):
 
 def load_ready_agents() -> dict[str, Agent]:
     agents: dict[str, Agent] = {}
-    for f in AGENTS_DIR.glob("*.json"):
-        try:
-            agents[f.stem] = Agent.from_file(f)
-        except Exception as exc:  # FileNotFound, JSON, Validation, etc.
-            logger.warning("Skipping agent %s: %s", f.name, exc)
+
+    abs_path = Path(f"/{default_path_agent}")
+    home_path = Path(f"~/{default_path_agent}")
+    cwd_path = Path.cwd() / default_path_agent
+    for path in (abs_path, home_path, cwd_path):
+        for f in path.glob("*.json"):
+            try:
+                agents[f.stem] = Agent.from_file(f)
+            except Exception as exc:  # FileNotFound, JSON, Validation, etc.
+                logger.warning("Skipping agent %s: %s", f.name, exc)
     return agents
 
 
-READY_AGENTS = load_ready_agents()
-AgentName = Literal.__getitem__(tuple(READY_AGENTS.keys()))
-
-
 async def spawn_agents(jobs: list[dict]) -> dict[str, str]:
+    from scripts.amon.tools.registry import READY_AGENTS
 
     async def run_one(job):
         agent = READY_AGENTS[job["agent"]]
