@@ -48,3 +48,12 @@ def remove_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def clear_sessions(keep_conut: int = 5) -> list[tuple(Path, float)]:
+    sessions = get_list_of_sessions()
+    sessions.sort(key=lambda x: x[1], reverse=True)
+    rm_ses = sessions[keep_conut:]
+    for s in rm_ses:
+        remove_session(s[0].name)
+    return rm_ses

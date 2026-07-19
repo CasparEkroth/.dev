@@ -1,10 +1,16 @@
 import argparse
 from uuid import UUID, uuid4
 
+
+from scripts.amon.tools.agent import spawn_agents
+from scripts.amon.tools.registry import get_registry, READY_AGENTS
 from scripts.amon.agent_loop import run_agent
-from scripts.amon.tools.registry import tool_registry
 from scripts.amon import terminal
-from scripts.amon.memory import get_list_of_sessions, remove_session
+from scripts.amon.memory import clear_sessions, get_list_of_sessions, remove_session
+
+import asyncio
+
+from scripts.amon.tools.skills import catalog_for_agent
 
 SYSTEM_PROMPT = "you are a coding agent"
 
@@ -14,16 +20,22 @@ def main() -> None:
 
     command = parser.add_mutually_exclusive_group()
     command.add_argument(
-        "--resume", action="store_true", help="Resume the last session"
+        "--resume", "-r", action="store_true", help="Resume the last session"
     )
     command.add_argument("--resume-id", type=UUID, help="Resume session by ID")
     command.add_argument("--list-sessions", action="store_true", help="List sessions")
     command.add_argument("--delete-session", type=UUID, help="Delete session by ID")
     command.add_argument(
+        "--keep-N-sessions",
+        "-keep-n",
+        type=int,
+        help="Keeps only the N latest sessions",
+    )
+    command.add_argument(
         "--headless", type=str, metavar="INPUT", help="Run in headless mode"
     )
 
-    parser.add_argument("--agent-type", type=str, default="default")
+    parser.add_argument("--agent", type=str, default="default")
     parser.add_argument("--save-session", action="store_true")
 
     args = parser.parse_args()
@@ -44,17 +56,21 @@ def main() -> None:
             )
         return
 
+    if args.keep_N_sessions:
+        rm_ses = clear_sessions(args.keep_N_sessions)
+        if rm_ses:
+            names = "\n".join(s[0].name for s in rm_ses)
+            terminal.console.print(f"[green]Deleted sessions:\n{names}")
+        else:
+            terminal.console.print("[yellow]No sessions to delete.")
+        return
+
     if args.headless:
         with terminal.spinner_context():
-            result = run_agent(
-                system_prompt=SYSTEM_PROMPT,
-                user_input=args.headless,
-                tool_registry=tool_registry,
-                confirm_fn=terminal.confirm_tool,
-                save_session_=args.save_session,
-                headless=True,
+            result = asyncio.run(
+                spawn_agents([{"agent": args.agent, "task": args.headless}])
             )
-        terminal.print_response(result)
+        terminal.print_headless_result(result)
         return
 
     _run_interactive(args)
@@ -65,8 +81,13 @@ def _run_interactive(args) -> None:
     if session_id is None:
         return
 
-    terminal.show_welcome()
+    terminal.show_welcome(session_id)
     prompt_session = terminal.make_prompt_session()
+    agent = READY_AGENTS.get(args.agent, None)
+
+    if agent is None:
+        terminal.console.print(f"Error: {args.agent} is not a saved agent")
+        return
 
     while True:
         try:
@@ -81,6 +102,15 @@ def _run_interactive(args) -> None:
         if user_input in ("/exit", "/quit", "/q"):
             terminal.console.print("[dim]Goodbye.[/dim]")
             break
+
+        if user_input == ("/agent"):
+            t_agent = terminal.pick_agents()
+            if t_agent is None or t_agent == "[cancel]":
+                terminal.console.print("[dim]No agent picket.[/dim]")
+                terminal.console.print(f"[dim]Current agent: {agent.name}")
+                continue
+            agent = READY_AGENTS.get(t_agent)
+            continue
 
         if user_input == "/sessions":
             terminal.print_sessions(_sorted_sessions())
@@ -98,16 +128,20 @@ def _run_interactive(args) -> None:
             continue
 
         with terminal.spinner_context():
-            result = run_agent(
-                system_prompt=SYSTEM_PROMPT,
+            run_agent(
+                system_prompt=agent.system_prompt,
                 user_input=user_input,
-                tool_registry=tool_registry,
+                tool_registry=get_registry(
+                    tools=agent.tools, allowed_tools=agent.allowed_tools
+                ),
+                skill_catalog=catalog_for_agent(agent.allowed_skills),
                 confirm_fn=terminal.confirm_tool,
+                stream_actions=terminal.stream_action,
                 session_id=session_id,
                 save_session_=True,
             )
 
-        terminal.print_response(result)
+        # terminal.print_response(result)
 
 
 def _resolve_session_id(args) -> UUID | None:
@@ -116,7 +150,7 @@ def _resolve_session_id(args) -> UUID | None:
     if args.resume:
         sessions = _sorted_sessions()
         picked = terminal.pick_session(sessions)
-        if picked == "[cancel]":
+        if picked == "[cancel]" or picked is None:
             return None
         return UUID(picked.name)
     return uuid4()

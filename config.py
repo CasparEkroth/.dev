@@ -41,5 +41,7 @@ EXCLUDED_DIRS = {
 
 
 # agent specific config.
-AGENTS_DIR: Path = Path("scripts/amon/agents")
-SESSIONS_DIR = Path("scripts/amon/sessions/")
+default_path = Path("scripts/amon/config")
+default_path_agent = Path(".amon/agents")
+SESSIONS_DIR = default_path / "sessions"
+SKILLS_DIR: Path = default_path / "skills"
