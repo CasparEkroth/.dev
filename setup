@@ -51,3 +51,11 @@ fi
 
 echo
 echo "Done."
+
+echo
+echo "Crating base agents and skills for Amon"
+echo
+
+chmod +x scripts/amon/config/setup/install
+./scripts/amon/config/setup/install
+
