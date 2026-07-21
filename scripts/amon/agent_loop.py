@@ -13,6 +13,7 @@ def run_agent(
     max_turns: int = 30,
     confirm_fn=None,
     stream_actions=None,
+    token_fn=None,
     session_id: UUID = None,
     save_session_: bool = True,
     headless: bool = False,
@@ -25,6 +26,7 @@ def run_agent(
     tool_definitions = [t["schema"] for t in tool_registry.values()]
     confirm_fn = confirm_fn or confirm_tool
     stream_actions = stream_actions or stream_action if not headless else None
+    token_fn = token_fn if not headless else None
 
     system_prompt = build_system_prompt(system_prompt, skill_catalog)
     history = load_session(session_id) if session_id else []
@@ -84,6 +86,7 @@ def run_agent(
             stream_actions("tool_result", {"name": name, "content": str(result)})
             conversation.append(tool_msg)
             new_messages.append(tool_msg)
+        token_fn(response["usage"]["total_tokens"])
 
     if save_session_:
         save_session(new_messages, session_id=session_id)

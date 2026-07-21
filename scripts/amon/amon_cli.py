@@ -7,7 +7,6 @@ from scripts.amon.tools.registry import get_registry, READY_AGENTS
 from scripts.amon.agent_loop import run_agent
 from scripts.amon import terminal
 from scripts.amon.memory import clear_sessions, get_list_of_sessions, remove_session
-
 import asyncio
 
 from scripts.amon.tools.skills import catalog_for_agent
@@ -135,6 +134,7 @@ def _run_interactive(args) -> None:
                 skill_catalog=catalog_for_agent(agent.allowed_skills),
                 confirm_fn=terminal.confirm_tool,
                 stream_actions=terminal.stream_action,
+                token_fn=terminal.update_footer,
                 session_id=session_id,
                 save_session_=True,
             )

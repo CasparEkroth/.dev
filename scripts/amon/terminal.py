@@ -4,21 +4,48 @@ import time
 from uuid import UUID
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
-from rich.live import Live
+
 from rich.spinner import Spinner
 
 import questionary
 from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.styles import Style
 from scripts.amon.memory import load_session
 from scripts.amon.tools.agent import Agent
 from scripts.amon.tools.registry import READY_AGENTS
 
 console = Console()
 _live: "Live | None" = None
+
+
+class StatusFooter:
+    def __init__(self, context_limit: int = 128_000):
+        self.tokens = 0
+        self.context_limit = context_limit
+
+    def add_tokens(self, n: int) -> None:
+        self.tokens += n
+
+    def render_html(self) -> HTML:
+        pct = (self.tokens / self.context_limit) * 100 if self.context_limit else 0
+        return HTML(
+            f"Tokens: <b>{self.tokens:,}</b>   |   "
+            f"Context: <b>{self.tokens:,}/{self.context_limit:,}</b> ({pct:.1f}%)"
+        )
+
+
+footer = StatusFooter(context_limit=128_000)
+
+
+def update_footer(tokens_added: int = 0) -> None:
+    if tokens_added:
+        footer.add_tokens(tokens_added)
 
 
 def show_welcome(session_id: UUID) -> None:
@@ -75,8 +102,20 @@ def spinner_context(label: str = "Thinking…"):
             _live = None
 
 
+def _toolbar_text():
+    return footer.render_html()
+
+
+_toolbar_style = Style.from_dict({"bottom-toolbar": "noreverse fg:ansiwhite bg:ansiblack"})
+
+
 def make_prompt_session() -> PromptSession:
-    return PromptSession(history=InMemoryHistory())
+    return PromptSession(
+        history=InMemoryHistory(),
+        bottom_toolbar=_toolbar_text,
+        refresh_interval=0.5,
+        style=_toolbar_style,
+    )
 
 
 def pick_session(sessions: list[tuple[Path, float]]) -> Path | None:
