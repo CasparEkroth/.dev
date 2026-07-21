@@ -27,7 +27,6 @@ def show_welcome(session_id: UUID) -> None:
             "[bold cyan]Agent[/bold cyan]  [dim]AI coding assistant[/dim]",
             subtitle="[dim]/exit · /agent · /new · /sessions[/dim]",
             border_style="cyan",
-            expand=False,
         )
     )
     history = load_session(session_id)

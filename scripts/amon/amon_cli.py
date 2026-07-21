@@ -12,8 +12,6 @@ import asyncio
 
 from scripts.amon.tools.skills import catalog_for_agent
 
-SYSTEM_PROMPT = "you are a coding agent"
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="amon")

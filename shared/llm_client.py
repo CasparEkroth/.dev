@@ -1,8 +1,13 @@
-import re
 import json
+import re
 import uuid
 import requests
 from config import settings
+from shared.llm_types import (
+    ChatCompletionResponse,
+    ToolCall,
+    ToolCallFunction,
+)
 
 
 def _parse_xml_tool_calls(content: str) -> list[dict] | None:
@@ -96,12 +101,34 @@ def call_llm_with_tools(
     )
     r.raise_for_status()
     raw = r.json()
-    # print(f"[DEBUG llm] tools_sent={len(payload.get('tools', []))} tool_choice={payload.get('tool_choice')} finish_reason={raw['choices'][0].get('finish_reason')}")
-    message = raw["choices"][0]["message"]
+    response = ChatCompletionResponse.model_validate(raw)
 
-    if not message.get("tool_calls") and message.get("content"):
-        parsed = _parse_xml_tool_calls(message["content"])
+    message = response.choices[0].message
+
+    # Fallback: some models still return XML tool calls
+    if not message.tool_calls and message.content:
+        parsed = _parse_xml_tool_calls(message.content)
         if parsed:
-            message = {**message, "tool_calls": parsed, "content": None}
+            tool_calls = [
+                ToolCall(
+                    id=tc["id"],
+                    function=ToolCallFunction(
+                        name=tc["function"]["name"],
+                        arguments=tc["function"]["arguments"],
+                    ),
+                )
+                for tc in parsed
+            ]
+            message = message.model_copy(
+                update={"tool_calls": tool_calls, "content": None}
+            )
+            # Update the response with the fixed message
+            response = response.model_copy(
+                update={
+                    "choices": [
+                        response.choices[0].model_copy(update={"message": message})
+                    ]
+                }
+            )
 
-    return message
+    return response.model_dump()

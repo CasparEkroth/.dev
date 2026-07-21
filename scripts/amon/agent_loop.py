@@ -32,12 +32,17 @@ def run_agent(
     new_messages = [{"role": "user", "content": user_input}]
 
     for turn in range(max_turns):
-        message = call_llm_with_tools(
+        response = call_llm_with_tools(
             system_prompt,
             conversation,
             tool_definitions,
             force_tool=turn == 0 and bool(tool_definitions),
         )
+
+        # Extract the message from the full ChatCompletionResponse
+        choice = response["choices"][0]
+        message = choice["message"]
+
         conversation.append(message)
         new_messages.append(message)
 
@@ -93,7 +98,8 @@ def _cli_confirm(tool_name: str, args: dict) -> bool:
 
 def build_system_prompt(base_prompt: str, skill_catalog: list[dict]) -> str:
     skills_section = "\n".join(
-        f"- {s['name']} (skill_path: {s['path']}): {s['description']}" for s in skill_catalog
+        f"- {s['name']} (skill_path: {s['path']}): {s['description']}"
+        for s in skill_catalog
     )
     return (
         base_prompt
