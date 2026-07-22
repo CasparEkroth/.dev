@@ -70,6 +70,34 @@ def call_llm(prompt: str) -> str:
     )
 
 
+def get_context_window(base_url: str, api_key: str, model: str) -> int | None:
+    """Look up the context-window size for `model` from the provider's model-listing
+    endpoint. Returns None if the endpoint is unavailable, unreachable, or doesn't
+    list the model (e.g. non-xAI providers)."""
+    endpoint = base_url.rstrip("/")
+    for suffix in ("/chat/completions", "/responses"):
+        if endpoint.endswith(suffix):
+            endpoint = endpoint[: -len(suffix)]
+            break
+    endpoint = f"{endpoint}/language-models"
+
+    try:
+        r = requests.get(
+            endpoint,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        models = r.json().get("models", [])
+    except (requests.RequestException, ValueError):
+        return None
+
+    for m in models:
+        if model == m.get("id") or model in m.get("aliases", []):
+            return m.get("long_context_threshold")
+    return None
+
+
 def call_llm_with_tools(
     system_prompt: str,
     conversation_history: dict,

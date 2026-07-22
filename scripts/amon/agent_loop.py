@@ -1,3 +1,4 @@
+from pathlib import Path
 from uuid import UUID
 
 from scripts.amon.memory import save_session, load_session
@@ -44,6 +45,7 @@ def run_agent(
         # Extract the message from the full ChatCompletionResponse
         choice = response["choices"][0]
         message = choice["message"]
+        usage = response["usage"]
 
         conversation.append(message)
         new_messages.append(message)
@@ -86,7 +88,7 @@ def run_agent(
             stream_actions("tool_result", {"name": name, "content": str(result)})
             conversation.append(tool_msg)
             new_messages.append(tool_msg)
-        token_fn(response["usage"]["total_tokens"])
+        token_fn(tokens_added=usage["total_tokens"], context=usage["prompt_tokens"])
 
     if save_session_:
         save_session(new_messages, session_id=session_id)
@@ -104,7 +106,14 @@ def build_system_prompt(base_prompt: str, skill_catalog: list[dict]) -> str:
         f"- {s['name']} (skill_path: {s['path']}): {s['description']}"
         for s in skill_catalog
     )
+    workspace_root = Path.cwd()
     return (
         base_prompt
+        + f"\n\n## Workspace\nThe project working directory is: {workspace_root}\n"
+        f"Skills live under ~/.amon/skills and are shared across projects — their paths are "
+        f"absolute and unrelated to the workspace. When running `shell`/`shell_readonly` "
+        f"commands (e.g. invoking a skill's script), always pass `cwd={workspace_root}` "
+        f"(or a path inside it) unless the user asks you to operate elsewhere. Never infer "
+        f"cwd from a skill's path."
         + f"\n\n## Available Skills\n{skills_section}\n\nWhen the user's request matches one of the above skills, your FIRST tool call MUST be `load_skill(skill_path=<path>)` using the skill_path shown. Do not run any shell commands or read any files before loading the skill."
     )

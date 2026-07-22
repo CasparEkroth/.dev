@@ -41,7 +41,7 @@ EXCLUDED_DIRS = {
 
 
 # agent specific config.
-
+BASE_CONTEXT_WINDOW: int = 200_000
 REPO_DIR = Path(__file__).parent.resolve()
 BASE_CONFIG_DIR = REPO_DIR / "scripts/amon/config"
 

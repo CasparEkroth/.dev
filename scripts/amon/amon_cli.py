@@ -2,14 +2,24 @@ import argparse
 from uuid import UUID, uuid4
 
 
+from config import settings
 from scripts.amon.tools.agent import spawn_agents
 from scripts.amon.tools.registry import get_registry, READY_AGENTS
 from scripts.amon.agent_loop import run_agent
 from scripts.amon import terminal
 from scripts.amon.memory import clear_sessions, get_list_of_sessions, remove_session
+from shared.llm_client import get_context_window
 import asyncio
 
 from scripts.amon.tools.skills import catalog_for_agent
+
+
+def _init_context_limit() -> None:
+    limit = get_context_window(
+        settings.LLM_BASE_URL, settings.LLM_API_KEY, settings.LLM_MODEL
+    )
+    if limit:
+        terminal.set_context_limit(limit)
 
 
 def main() -> None:
@@ -61,6 +71,8 @@ def main() -> None:
         else:
             terminal.console.print("[yellow]No sessions to delete.")
         return
+
+    _init_context_limit()
 
     if args.headless:
         with terminal.spinner_context():

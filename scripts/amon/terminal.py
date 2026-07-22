@@ -19,18 +19,23 @@ from prompt_toolkit.styles import Style
 from scripts.amon.memory import load_session
 from scripts.amon.tools.agent import Agent
 from scripts.amon.tools.registry import READY_AGENTS
+from config import BASE_CONTEXT_WINDOW
 
 console = Console()
 _live: "Live | None" = None
 
 
 class StatusFooter:
-    def __init__(self, context_limit: int = 128_000):
+    def __init__(self, context_limit: int = BASE_CONTEXT_WINDOW):
         self.tokens = 0
         self.context_limit = context_limit
+        self.context_current = 0
 
     def add_tokens(self, n: int) -> None:
         self.tokens += n
+
+    def update_context(self, c: int) -> None:
+        self.context_current = max(c, self.context_current)
 
     def render_html(self) -> HTML:
         pct = (self.tokens / self.context_limit) * 100 if self.context_limit else 0
@@ -40,12 +45,18 @@ class StatusFooter:
         )
 
 
-footer = StatusFooter(context_limit=128_000)
+footer = StatusFooter()
 
 
-def update_footer(tokens_added: int = 0) -> None:
+def update_footer(tokens_added: int = 0, context: int = 0) -> None:
     if tokens_added:
         footer.add_tokens(tokens_added)
+    if context:
+        footer.update_context(context)
+
+
+def set_context_limit(limit: int) -> None:
+    footer.context_limit = limit
 
 
 def show_welcome(session_id: UUID) -> None:
@@ -106,7 +117,9 @@ def _toolbar_text():
     return footer.render_html()
 
 
-_toolbar_style = Style.from_dict({"bottom-toolbar": "noreverse fg:ansiwhite bg:ansiblack"})
+_toolbar_style = Style.from_dict(
+    {"bottom-toolbar": "noreverse fg:ansiwhite bg:ansiblack"}
+)
 
 
 def make_prompt_session() -> PromptSession:
