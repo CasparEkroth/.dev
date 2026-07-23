@@ -1,7 +1,7 @@
 from pathlib import Path
 from uuid import UUID
 
-from scripts.amon.memory import save_session, load_session
+from scripts.amon.memory import save_context_tokens, save_session, load_session
 from shared.llm_client import call_llm_with_tools
 import json
 
@@ -58,6 +58,8 @@ def run_agent(
         if not tool_calls:
             if save_session_:
                 save_session(new_messages, session_id=session_id)
+                if session_id:
+                    save_context_tokens(session_id, usage["prompt_tokens"])
             return message.get("content", "")
 
         for call in tool_calls:
@@ -79,6 +81,8 @@ def run_agent(
                 except Exception as e:
                     if save_session_:
                         save_session(new_messages, session_id=session_id)
+                        if session_id:
+                            save_context_tokens(session_id, usage["prompt_tokens"])
                     result = f"Error: {e}"
             tool_msg = {
                 "role": "tool",
@@ -92,6 +96,8 @@ def run_agent(
 
     if save_session_:
         save_session(new_messages, session_id=session_id)
+        if session_id:
+            save_context_tokens(session_id, usage["prompt_tokens"])
     return "Max turns reached without a final answer."
 
 

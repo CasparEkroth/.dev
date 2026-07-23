@@ -34,25 +34,44 @@ class StatusFooter:
     def add_tokens(self, n: int) -> None:
         self.tokens += n
 
-    def update_context(self, c: int) -> None:
-        self.context_current = max(c, self.context_current)
+    def reset_footer(self, token: bool = False, context: bool = False) -> None:
+        if token:
+            self.tokens = 0
+        if context:
+            self.context_current = 0
+
+    def set_context(self, c: int | str) -> None:
+        self.context_current = c
 
     def render_html(self) -> HTML:
-        pct = (self.tokens / self.context_limit) * 100 if self.context_limit else 0
+        if isinstance(self.context_current, str):
+            ctx = f"{self.context_current}/{self.context_limit:,}"
+            pct = 0.0
+        else:
+            ctx = f"{self.context_current:,}/{self.context_limit:,}"
+            pct = (
+                (self.context_current / self.context_limit) * 100
+                if self.context_limit
+                else 0.0
+            )
         return HTML(
             f"Tokens: <b>{self.tokens:,}</b>   |   "
-            f"Context: <b>{self.tokens:,}/{self.context_limit:,}</b> ({pct:.1f}%)"
+            f"Context: <b>{ctx}</b> ({pct:.1f}%)"
         )
 
 
 footer = StatusFooter()
 
 
-def update_footer(tokens_added: int = 0, context: int = 0) -> None:
+def update_footer(tokens_added: int = 0, context: int | str = 0) -> None:
     if tokens_added:
         footer.add_tokens(tokens_added)
     if context:
-        footer.update_context(context)
+        footer.set_context(context)
+
+
+def reste_context() -> None:
+    footer.reset_footer(context=True)
 
 
 def set_context_limit(limit: int) -> None:

@@ -36,6 +36,17 @@ def _parse_xml_tool_calls(content: str) -> list[dict] | None:
     return calls or None
 
 
+def parse_llm_json(text: str) -> list | dict | None:
+    """Parse a JSON value out of an LLM text response, tolerating ```json fences."""
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
 def call_llm_with_config(base_url: str, api_key: str, model: str, prompt: str) -> str:
     endpoint = base_url.rstrip("/")
 
