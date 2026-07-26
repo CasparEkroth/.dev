@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NVIM_CONFIG_DIR="$HOME/.config/nvim"
+
+mkdir -p "$NVIM_CONFIG_DIR"
+
+cp "$SCRIPT_DIR/init.lua" "$NVIM_CONFIG_DIR/init.lua"
+cp "$SCRIPT_DIR/lazy-lock.json" "$NVIM_CONFIG_DIR/lazy-lock.json"
+
+echo "nvim config installed to $NVIM_CONFIG_DIR"
+echo "Open nvim to let lazy.nvim finish plugin setup."
