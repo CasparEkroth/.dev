@@ -1,8 +1,13 @@
-import re
 import json
+import re
 import uuid
 import requests
 from config import settings
+from shared.llm_types import (
+    ChatCompletionResponse,
+    ToolCall,
+    ToolCallFunction,
+)
 
 
 def _parse_xml_tool_calls(content: str) -> list[dict] | None:
@@ -29,6 +34,17 @@ def _parse_xml_tool_calls(content: str) -> list[dict] | None:
             }
         )
     return calls or None
+
+
+def parse_llm_json(text: str) -> list | dict | None:
+    """Parse a JSON value out of an LLM text response, tolerating ```json fences."""
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
 
 
 def call_llm_with_config(base_url: str, api_key: str, model: str, prompt: str) -> str:
@@ -65,6 +81,34 @@ def call_llm(prompt: str) -> str:
     )
 
 
+def get_context_window(base_url: str, api_key: str, model: str) -> int | None:
+    """Look up the context-window size for `model` from the provider's model-listing
+    endpoint. Returns None if the endpoint is unavailable, unreachable, or doesn't
+    list the model (e.g. non-xAI providers)."""
+    endpoint = base_url.rstrip("/")
+    for suffix in ("/chat/completions", "/responses"):
+        if endpoint.endswith(suffix):
+            endpoint = endpoint[: -len(suffix)]
+            break
+    endpoint = f"{endpoint}/language-models"
+
+    try:
+        r = requests.get(
+            endpoint,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        models = r.json().get("models", [])
+    except (requests.RequestException, ValueError):
+        return None
+
+    for m in models:
+        if model == m.get("id") or model in m.get("aliases", []):
+            return m.get("long_context_threshold")
+    return None
+
+
 def call_llm_with_tools(
     system_prompt: str,
     conversation_history: dict,
@@ -96,12 +140,34 @@ def call_llm_with_tools(
     )
     r.raise_for_status()
     raw = r.json()
-    # print(f"[DEBUG llm] tools_sent={len(payload.get('tools', []))} tool_choice={payload.get('tool_choice')} finish_reason={raw['choices'][0].get('finish_reason')}")
-    message = raw["choices"][0]["message"]
+    response = ChatCompletionResponse.model_validate(raw)
 
-    if not message.get("tool_calls") and message.get("content"):
-        parsed = _parse_xml_tool_calls(message["content"])
+    message = response.choices[0].message
+
+    # Fallback: some models still return XML tool calls
+    if not message.tool_calls and message.content:
+        parsed = _parse_xml_tool_calls(message.content)
         if parsed:
-            message = {**message, "tool_calls": parsed, "content": None}
+            tool_calls = [
+                ToolCall(
+                    id=tc["id"],
+                    function=ToolCallFunction(
+                        name=tc["function"]["name"],
+                        arguments=tc["function"]["arguments"],
+                    ),
+                )
+                for tc in parsed
+            ]
+            message = message.model_copy(
+                update={"tool_calls": tool_calls, "content": None}
+            )
+            # Update the response with the fixed message
+            response = response.model_copy(
+                update={
+                    "choices": [
+                        response.choices[0].model_copy(update={"message": message})
+                    ]
+                }
+            )
 
-    return message
+    return response.model_dump()

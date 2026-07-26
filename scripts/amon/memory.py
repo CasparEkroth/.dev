@@ -8,6 +8,7 @@ def save_session(
     conversation: list[dict],
     session_id: UUID = None,
     session_dir: Path = SESSIONS_DIR,
+    override: bool = False,
 ) -> UUID:
     if conversation is None:
         return session_id or uuid4()
@@ -20,8 +21,10 @@ def save_session(
     existing = []
     if path.exists():
         existing = json.loads(path.read_text(encoding="utf-8"))
-
-    existing.extend(conversation)
+    if override:
+        existing = conversation
+    else:
+        existing.extend(conversation)
     path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     return session_id
 
@@ -33,16 +36,41 @@ def load_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> list[dic
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _meta_path(session_id: UUID, session_dir: Path) -> Path:
+    return session_dir / f"{session_id}.meta.json"
+
+
+def save_context_tokens(
+    session_id: UUID, tokens: int, session_dir: Path = SESSIONS_DIR
+) -> None:
+    session_dir.mkdir(parents=True, exist_ok=True)
+    _meta_path(session_id, session_dir).write_text(
+        json.dumps({"context_tokens": tokens}), encoding="utf-8"
+    )
+
+
+def load_context_tokens(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> int:
+    path = _meta_path(session_id, session_dir)
+    if not path.exists():
+        return 0
+    return json.loads(path.read_text(encoding="utf-8")).get("context_tokens", 0)
+
+
 def get_list_of_sessions(
     session_dir: Path = SESSIONS_DIR,
 ) -> list[tuple(UUID, float)]:
     if not session_dir.exists():
         return []
-    return [(p, p.stat().st_mtime) for p in session_dir.iterdir()]
+    return [
+        (p, p.stat().st_mtime)
+        for p in session_dir.iterdir()
+        if not p.name.endswith(".meta.json")
+    ]
 
 
 def remove_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> bool:
     path = session_dir / str(session_id)
+    _meta_path(session_id, session_dir).unlink(missing_ok=True)
     try:
         path.unlink()
         return True

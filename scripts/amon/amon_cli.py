@@ -2,17 +2,31 @@ import argparse
 from uuid import UUID, uuid4
 
 
+from config import settings
 from scripts.amon.tools.agent import spawn_agents
 from scripts.amon.tools.registry import get_registry, READY_AGENTS
 from scripts.amon.agent_loop import run_agent
 from scripts.amon import terminal
-from scripts.amon.memory import clear_sessions, get_list_of_sessions, remove_session
-
+from scripts.amon.memory import (
+    clear_sessions,
+    get_list_of_sessions,
+    load_context_tokens,
+    load_session,
+    remove_session,
+    save_session,
+)
+from shared.llm_client import call_llm, get_context_window, parse_llm_json
 import asyncio
 
 from scripts.amon.tools.skills import catalog_for_agent
 
-SYSTEM_PROMPT = "you are a coding agent"
+
+def _init_context_limit() -> None:
+    limit = get_context_window(
+        settings.LLM_BASE_URL, settings.LLM_API_KEY, settings.LLM_MODEL
+    )
+    if limit:
+        terminal.set_context_limit(limit)
 
 
 def main() -> None:
@@ -65,6 +79,8 @@ def main() -> None:
             terminal.console.print("[yellow]No sessions to delete.")
         return
 
+    _init_context_limit()
+
     if args.headless:
         with terminal.spinner_context():
             result = asyncio.run(
@@ -81,6 +97,7 @@ def _run_interactive(args) -> None:
     if session_id is None:
         return
 
+    terminal.update_footer(context=load_context_tokens(session_id))
     terminal.show_welcome(session_id)
     prompt_session = terminal.make_prompt_session()
     agent = READY_AGENTS.get(args.agent, None)
@@ -118,7 +135,32 @@ def _run_interactive(args) -> None:
 
         if user_input == "/new":
             session_id = uuid4()
+            terminal.reste_context()
             terminal.console.print("[dim]New session started.[/dim]")
+            continue
+
+        if user_input == "/compact":
+            conversation = load_session(session_id)
+            if not conversation:
+                terminal.console.print("[dim]Session is empty.[/dim]")
+                continue
+            with terminal.spinner_context():
+                response = call_llm(
+                    f"summarize this conversation {conversation} return the summary as a json in the same structure as the original but significant smaller."
+                )
+            new_conversation = parse_llm_json(response)
+            if new_conversation is None:
+                terminal.console.print(
+                    "[red]Compact failed: model did not return valid JSON.[/red]"
+                )
+                continue
+            save_session(
+                conversation=new_conversation,
+                session_id=session_id,
+                override=True,
+            )
+            terminal.console.print("[dim]Session compacted.[/dim]")
+            terminal.update_footer(context="-")
             continue
 
         if str(user_input).startswith("/"):
@@ -137,6 +179,7 @@ def _run_interactive(args) -> None:
                 skill_catalog=catalog_for_agent(agent.allowed_skills),
                 confirm_fn=terminal.confirm_tool,
                 stream_actions=terminal.stream_action,
+                token_fn=terminal.update_footer,
                 session_id=session_id,
                 save_session_=True,
             )

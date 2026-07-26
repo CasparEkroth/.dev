@@ -4,21 +4,78 @@ import time
 from uuid import UUID
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
-from rich.live import Live
+
 from rich.spinner import Spinner
 
 import questionary
 from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.styles import Style
 from scripts.amon.memory import load_session
 from scripts.amon.tools.agent import Agent
 from scripts.amon.tools.registry import READY_AGENTS
+from config import BASE_CONTEXT_WINDOW
 
 console = Console()
 _live: "Live | None" = None
+
+
+class StatusFooter:
+    def __init__(self, context_limit: int = BASE_CONTEXT_WINDOW):
+        self.tokens = 0
+        self.context_limit = context_limit
+        self.context_current = 0
+
+    def add_tokens(self, n: int) -> None:
+        self.tokens += n
+
+    def reset_footer(self, token: bool = False, context: bool = False) -> None:
+        if token:
+            self.tokens = 0
+        if context:
+            self.context_current = 0
+
+    def set_context(self, c: int | str) -> None:
+        self.context_current = c
+
+    def render_html(self) -> HTML:
+        if isinstance(self.context_current, str):
+            ctx = f"{self.context_current}/{self.context_limit:,}"
+            pct = 0.0
+        else:
+            ctx = f"{self.context_current:,}/{self.context_limit:,}"
+            pct = (
+                (self.context_current / self.context_limit) * 100
+                if self.context_limit
+                else 0.0
+            )
+        return HTML(
+            f"Tokens: <b>{self.tokens:,}</b>   |   "
+            f"Context: <b>{ctx}</b> ({pct:.1f}%)"
+        )
+
+
+footer = StatusFooter()
+
+
+def update_footer(tokens_added: int = 0, context: int | str = 0) -> None:
+    if tokens_added:
+        footer.add_tokens(tokens_added)
+    if context:
+        footer.set_context(context)
+
+
+def reste_context() -> None:
+    footer.reset_footer(context=True)
+
+
+def set_context_limit(limit: int) -> None:
+    footer.context_limit = limit
 
 
 def show_welcome(session_id: UUID) -> None:
@@ -27,7 +84,6 @@ def show_welcome(session_id: UUID) -> None:
             "[bold cyan]Agent[/bold cyan]  [dim]AI coding assistant[/dim]",
             subtitle="[dim]/exit · /agent · /new · /sessions[/dim]",
             border_style="cyan",
-            expand=False,
         )
     )
     history = load_session(session_id)
@@ -76,8 +132,22 @@ def spinner_context(label: str = "Thinking…"):
             _live = None
 
 
+def _toolbar_text():
+    return footer.render_html()
+
+
+_toolbar_style = Style.from_dict(
+    {"bottom-toolbar": "noreverse fg:ansiwhite bg:ansiblack"}
+)
+
+
 def make_prompt_session() -> PromptSession:
-    return PromptSession(history=InMemoryHistory())
+    return PromptSession(
+        history=InMemoryHistory(),
+        bottom_toolbar=_toolbar_text,
+        refresh_interval=0.5,
+        style=_toolbar_style,
+    )
 
 
 def pick_session(sessions: list[tuple[Path, float]]) -> Path | None:

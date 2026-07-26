@@ -1,6 +1,7 @@
+from pathlib import Path
 from uuid import UUID
 
-from scripts.amon.memory import save_session, load_session
+from scripts.amon.memory import save_context_tokens, save_session, load_session
 from shared.llm_client import call_llm_with_tools
 import json
 
@@ -13,6 +14,7 @@ def run_agent(
     max_turns: int = 30,
     confirm_fn=None,
     stream_actions=None,
+    token_fn=None,
     session_id: UUID = None,
     save_session_: bool = True,
     headless: bool = False,
@@ -25,6 +27,7 @@ def run_agent(
     tool_definitions = [t["schema"] for t in tool_registry.values()]
     confirm_fn = confirm_fn or confirm_tool
     stream_actions = stream_actions or stream_action if not headless else None
+    token_fn = token_fn if not headless else None
 
     system_prompt = build_system_prompt(system_prompt, skill_catalog)
     history = load_session(session_id) if session_id else []
@@ -32,12 +35,18 @@ def run_agent(
     new_messages = [{"role": "user", "content": user_input}]
 
     for turn in range(max_turns):
-        message = call_llm_with_tools(
+        response = call_llm_with_tools(
             system_prompt,
             conversation,
             tool_definitions,
             force_tool=turn == 0 and bool(tool_definitions),
         )
+
+        # Extract the message from the full ChatCompletionResponse
+        choice = response["choices"][0]
+        message = choice["message"]
+        usage = response["usage"]
+
         conversation.append(message)
         new_messages.append(message)
 
@@ -49,6 +58,8 @@ def run_agent(
         if not tool_calls:
             if save_session_:
                 save_session(new_messages, session_id=session_id)
+                if session_id:
+                    save_context_tokens(session_id, usage["prompt_tokens"])
             return message.get("content", "")
 
         for call in tool_calls:
@@ -70,6 +81,8 @@ def run_agent(
                 except Exception as e:
                     if save_session_:
                         save_session(new_messages, session_id=session_id)
+                        if session_id:
+                            save_context_tokens(session_id, usage["prompt_tokens"])
                     result = f"Error: {e}"
             tool_msg = {
                 "role": "tool",
@@ -79,9 +92,12 @@ def run_agent(
             stream_actions("tool_result", {"name": name, "content": str(result)})
             conversation.append(tool_msg)
             new_messages.append(tool_msg)
+        token_fn(tokens_added=usage["total_tokens"], context=usage["prompt_tokens"])
 
     if save_session_:
         save_session(new_messages, session_id=session_id)
+        if session_id:
+            save_context_tokens(session_id, usage["prompt_tokens"])
     return "Max turns reached without a final answer."
 
 
@@ -93,9 +109,17 @@ def _cli_confirm(tool_name: str, args: dict) -> bool:
 
 def build_system_prompt(base_prompt: str, skill_catalog: list[dict]) -> str:
     skills_section = "\n".join(
-        f"- {s['name']} (skill_path: {s['path']}): {s['description']}" for s in skill_catalog
+        f"- {s['name']} (skill_path: {s['path']}): {s['description']}"
+        for s in skill_catalog
     )
+    workspace_root = Path.cwd()
     return (
         base_prompt
+        + f"\n\n## Workspace\nThe project working directory is: {workspace_root}\n"
+        f"Skills live under ~/.amon/skills and are shared across projects — their paths are "
+        f"absolute and unrelated to the workspace. When running `shell`/`shell_readonly` "
+        f"commands (e.g. invoking a skill's script), always pass `cwd={workspace_root}` "
+        f"(or a path inside it) unless the user asks you to operate elsewhere. Never infer "
+        f"cwd from a skill's path."
         + f"\n\n## Available Skills\n{skills_section}\n\nWhen the user's request matches one of the above skills, your FIRST tool call MUST be `load_skill(skill_path=<path>)` using the skill_path shown. Do not run any shell commands or read any files before loading the skill."
     )

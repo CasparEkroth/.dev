@@ -41,7 +41,8 @@ EXCLUDED_DIRS = {
 
 
 # agent specific config.
-default_path = Path("scripts/amon/config")
-default_path_agent = Path(".amon/agents")
-SESSIONS_DIR = default_path / "sessions"
-SKILLS_DIR: Path = default_path / "skills"
+BASE_CONTEXT_WINDOW: int = 200_000
+REPO_DIR = Path(__file__).parent.resolve()
+BASE_CONFIG_DIR = REPO_DIR / "scripts/amon/config"
+
+SESSIONS_DIR = BASE_CONFIG_DIR / "sessions"
