@@ -136,7 +136,7 @@ def call_llm_with_tools(
             "Content-Type": "application/json",
         },
         json=payload,
-        timeout=(10, 180),
+        timeout=(10, 600),
     )
     r.raise_for_status()
     raw = r.json()

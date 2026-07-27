@@ -1,6 +1,7 @@
 from pathlib import Path
 from uuid import UUID
 
+from scripts.amon.hooks import HookEventName, run_hook_event
 from scripts.amon.memory import save_context_tokens, save_session, load_session
 from shared.llm_client import call_llm_with_tools
 import json
@@ -18,6 +19,7 @@ def run_agent(
     session_id: UUID = None,
     save_session_: bool = True,
     headless: bool = False,
+    hooks: dict[str, str] = {},
 ) -> str:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
@@ -33,6 +35,9 @@ def run_agent(
     history = load_session(session_id) if session_id else []
     conversation = history + [{"role": "user", "content": user_input}]
     new_messages = [{"role": "user", "content": user_input}]
+
+    if hooks.get(HookEventName.START):
+        run_hook_event()
 
     for turn in range(max_turns):
         response = call_llm_with_tools(
