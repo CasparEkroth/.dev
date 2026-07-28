@@ -18,6 +18,7 @@ class Agent(BaseModel):
     allowed_tools: list[str]
     max_turns: int = Field(default=10, gt=0)
     allowed_skills: list[str] = Field(default_factory=list)
+    hooks: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -61,6 +62,7 @@ class Agent(BaseModel):
             headless=True,
             save_session_=save_session,
             max_turns=self.max_turns,
+            hooks=self.hooks,
         )
 
 

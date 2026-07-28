@@ -182,6 +182,7 @@ def _run_interactive(args) -> None:
                 token_fn=terminal.update_footer,
                 session_id=session_id,
                 save_session_=True,
+                hooks=agent.hooks,
             )
 
         # terminal.print_response(result)

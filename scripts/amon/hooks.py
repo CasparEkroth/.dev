@@ -30,7 +30,7 @@ def _run_script(
     In a bash hook:
         echo "$name"
     """
-    path = Path(hook)
+    path = Path(hook).expanduser().resolve()
     if not path.is_file():
         return None
 
@@ -84,4 +84,4 @@ def run_hook_event(
         base_env["TOOL_INPUT"] = kwargs["tool_input"]
 
     resp = _run_script(path, timeout=timeout, **base_env)
-    print(f"[DEBUG] content={repr(resp)}")
+    # print(f"[DEBUG] content={repr(resp)}")
