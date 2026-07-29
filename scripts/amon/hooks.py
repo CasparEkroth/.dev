@@ -83,5 +83,5 @@ def run_hook_event(
         base_env["TOOL_NAME"] = kwargs["tool_name"]
         base_env["TOOL_INPUT"] = kwargs["tool_input"]
 
-    resp = _run_script(path, timeout=timeout, **base_env)
+    _run_script(path, timeout=timeout, **base_env)
     # print(f"[DEBUG] content={repr(resp)}")
