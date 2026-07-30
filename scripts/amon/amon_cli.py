@@ -170,21 +170,24 @@ def _run_interactive(args) -> None:
             continue
 
         with terminal.spinner_context():
-            run_agent(
-                system_prompt=agent.system_prompt,
-                user_input=user_input,
-                tool_registry=get_registry(
-                    tools=agent.tools, allowed_tools=agent.allowed_tools
-                ),
-                skill_catalog=catalog_for_agent(agent.allowed_skills),
-                confirm_fn=terminal.confirm_tool,
-                stream_actions=terminal.stream_action,
-                token_fn=terminal.update_footer,
-                session_id=session_id,
-                save_session_=True,
-            )
-
-        # terminal.print_response(result)
+            try:
+                run_agent(
+                    system_prompt=agent.system_prompt,
+                    user_input=user_input,
+                    tool_registry=get_registry(
+                        tools=agent.tools, allowed_tools=agent.allowed_tools
+                    ),
+                    skill_catalog=catalog_for_agent(agent.allowed_skills),
+                    confirm_fn=terminal.confirm_tool,
+                    stream_actions=terminal.stream_action,
+                    token_fn=terminal.update_footer,
+                    session_id=session_id,
+                    save_session_=True,
+                    hooks=agent.hooks,
+                )
+            except KeyboardInterrupt:
+                terminal.console.print("\n[yellow]Interrupted.[/yellow]")
+                continue
 
 
 def _resolve_session_id(args) -> UUID | None:
