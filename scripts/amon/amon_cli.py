@@ -84,7 +84,15 @@ def main() -> None:
     if args.headless:
         with terminal.spinner_context():
             result = asyncio.run(
-                spawn_agents([{"agent": args.agent, "task": args.headless}])
+                spawn_agents(
+                    [
+                        {
+                            "agent": args.agent,
+                            "task": args.headless,
+                            "save_session": args.save_session,
+                        }
+                    ]
+                )
             )
         terminal.print_headless_result(result)
         return

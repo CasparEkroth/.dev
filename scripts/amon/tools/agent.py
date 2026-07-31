@@ -88,7 +88,9 @@ async def spawn_agents(jobs: list[dict]) -> dict[str, str]:
 
     async def run_one(job):
         agent = READY_AGENTS[job["agent"]]
-        result = await agent.run_task(task=job["task"])
+        result = await agent.run_task(
+            task=job["task"], save_session=job.get("save_session", True)
+        )
         return job["agent"] + ":" + job["task"], result
 
     results = await asyncio.gather(*[run_one(j) for j in jobs])

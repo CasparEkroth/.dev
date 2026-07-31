@@ -1,0 +1,9 @@
+{
+  "name": "minimal",
+  "description": "Small read-only agent for docs examples and quick inspection tasks.",
+  "system_prompt": "You are a minimal read-only agent. Use tools to inspect the workspace. Never modify files. Prefer read_file for file contents and shell_readonly for ls/grep/find/git.",
+  "tools": ["read_file", "shell_readonly", "load_skill"],
+  "allowed_tools": ["read_file", "shell_readonly", "load_skill"],
+  "allowed_skills": ["skill://~/.amon/skills/*/SKILL.md"],
+  "max_turns": 15
+}
