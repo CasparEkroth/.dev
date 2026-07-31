@@ -107,7 +107,8 @@ def run_agent(
                             tool_input=args,
                         )
 
-                    stream_actions("tool_call", {"name": name, "args": args})
+                    if stream_actions:
+                        stream_actions("tool_call", {"name": name, "args": args})
                     result = fn(**args)
                 except Exception as e:
                     if save_session_:
@@ -132,11 +133,13 @@ def run_agent(
                     tool_output=str(result),
                 )
 
-            stream_actions("tool_result", {"name": name, "content": str(result)})
+            if stream_actions:
+                stream_actions("tool_result", {"name": name, "content": str(result)})
             conversation.append(tool_msg)
             new_messages.append(tool_msg)
 
-        token_fn(tokens_added=usage["total_tokens"], context=usage["prompt_tokens"])
+        if token_fn:
+            token_fn(tokens_added=usage["total_tokens"], context=usage["prompt_tokens"])
 
     if save_session_:
         save_session(new_messages, session_id=session_id)
