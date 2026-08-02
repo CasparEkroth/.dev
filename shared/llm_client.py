@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import uuid
 import requests
 from config import settings
@@ -8,6 +9,22 @@ from shared.llm_types import (
     ToolCall,
     ToolCallFunction,
 )
+
+_RETRYABLE_EXCEPTIONS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+
+
+def _post_with_retries(
+    endpoint: str, headers: dict, json_payload: dict, timeout, max_retries: int = 3
+) -> requests.Response:
+    """POST with exponential backoff on read timeouts / connection errors, since the
+    LLM API occasionally hangs or drops a connection mid-request."""
+    for attempt in range(max_retries + 1):
+        try:
+            return requests.post(endpoint, headers=headers, json=json_payload, timeout=timeout)
+        except _RETRYABLE_EXCEPTIONS:
+            if attempt == max_retries:
+                raise
+            time.sleep(2**attempt)
 
 
 def _parse_xml_tool_calls(content: str) -> list[dict] | None:
@@ -53,13 +70,13 @@ def call_llm_with_config(base_url: str, api_key: str, model: str, prompt: str) -
     if not endpoint.endswith(("/chat/completions", "/responses")):
         endpoint = f"{endpoint}/chat/completions"
 
-    r = requests.post(
+    r = _post_with_retries(
         endpoint,
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
+        json_payload={
             "model": model,
             "messages": [
                 {"role": "user", "content": prompt},
@@ -129,14 +146,14 @@ def call_llm_with_tools(
     if not endpoint.endswith(("/chat/completions", "/responses")):
         endpoint = f"{endpoint}/chat/completions"
 
-    r = requests.post(
+    r = _post_with_retries(
         endpoint,
         headers={
             "Authorization": f"Bearer {settings.LLM_API_KEY}",
             "Content-Type": "application/json",
         },
-        json=payload,
-        timeout=(10, 600),
+        json_payload=payload,
+        timeout=(10, 120),
     )
     r.raise_for_status()
     raw = r.json()

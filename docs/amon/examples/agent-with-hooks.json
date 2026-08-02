@@ -1,0 +1,15 @@
+{
+  "name": "default-logged",
+  "description": "Default-style agent with lifecycle logging hooks attached.",
+  "system_prompt": "You are a coding agent. Use tools instead of guessing. Load matching skills before following skill-specific workflows.",
+  "tools": ["*"],
+  "allowed_tools": ["shell_readonly", "read_file", "load_skill", "spawn_agents"],
+  "allowed_skills": ["skill://~/.amon/skills/*/SKILL.md"],
+  "hooks": {
+    "start": "~/.amon/hooks/log.sh",
+    "stop": "~/.amon/hooks/log.sh",
+    "preToolUse": "~/.amon/hooks/log.sh",
+    "postToolUse": "~/.amon/hooks/log.sh"
+  },
+  "max_turns": 50
+}

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 #adding agnets
 mkdir -p "$HOME/.amon/agents"
@@ -33,12 +34,19 @@ EOF
 
 echo "Created $HOME/.amon/agnets/planner.json"
 
+
 # adding skills 
 mkdir -p "$HOME/.amon/skills/python-validate"
 rm -rf "$HOME/.amon/skills/python-validate"
 cp -r "$PROJECT_ROOT/setup/python-validate" "$HOME/.amon/skills/python-validate"
 
 echo "Created $HOME/.amon/skills/python-validate" 
+
+rm -rf "$HOME/.amon/skills/amon-author"
+cp -r "$REPO_ROOT/docs/amon/examples/skills/amon-author" "$HOME/.amon/skills/amon-author"
+
+echo "Created $HOME/.amon/skills/amon-author" 
+
 
 #adding default hook
 echo "Adding default hook: log.sh"
