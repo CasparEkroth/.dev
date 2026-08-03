@@ -1,11 +1,61 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
 import os
+import json
 
 from scripts.amon.hooks import HookEventName, run_hook_event
 from scripts.amon.memory import save_context_tokens, save_session, load_session
 from shared.llm_client import call_llm_with_tools
-import json
+
+
+@dataclass
+class AgentResult:
+    """Structured result returned by run_agent."""
+
+    ok: bool
+    result: str | None
+    error: str | None = None
+    usage: dict[str, int] = field(
+        default_factory=lambda: {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+    )
+    turns: int = 0
+    tools_used: list[str] = field(default_factory=list)
+    session_id: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "result": self.result,
+            "error": self.error,
+            "usage": dict(self.usage),
+            "turns": self.turns,
+            "tools_used": list(self.tools_used),
+            "session_id": self.session_id,
+        }
+
+
+def _empty_usage() -> dict[str, int]:
+    return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+
+def _normalize_usage(raw: dict | None, accumulated_total: int = 0) -> dict[str, int]:
+    raw = raw or {}
+    prompt = int(raw.get("prompt_tokens") or 0)
+    completion = int(raw.get("completion_tokens") or 0)
+    total = int(raw.get("total_tokens") or (prompt + completion) or 0)
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        # Prefer full-run total when provided by caller.
+        "total_tokens": accumulated_total or total,
+    }
 
 
 def run_agent(
@@ -21,7 +71,7 @@ def run_agent(
     save_session_: bool = True,
     headless: bool = False,
     hooks: dict[str, str] = {},
-) -> str:
+) -> AgentResult:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
     """
@@ -37,15 +87,48 @@ def run_agent(
     conversation = history + [{"role": "user", "content": user_input}]
     new_messages = [{"role": "user", "content": user_input}]
 
+    tools_used: list[str] = []
+    accumulated_total_tokens = 0
+    last_usage = _empty_usage()
+    last_content = ""
+    active_session_id = session_id
+
+    def _persist(usage_dict: dict) -> None:
+        nonlocal active_session_id
+        if not save_session_:
+            return
+        active_session_id = save_session(new_messages, session_id=active_session_id)
+        if active_session_id:
+            save_context_tokens(active_session_id, usage_dict.get("prompt_tokens", 0))
+
+    def _finish(
+        *,
+        ok: bool,
+        result: str | None,
+        error: str | None,
+        turns: int,
+    ) -> AgentResult:
+        sid = str(active_session_id) if active_session_id else None
+        return AgentResult(
+            ok=ok,
+            result=result,
+            error=error,
+            usage=_normalize_usage(last_usage, accumulated_total_tokens),
+            turns=turns,
+            tools_used=list(tools_used),
+            session_id=sid,
+        )
+
     if hooks.get(HookEventName.START):
         run_hook_event(
             path=hooks.get(HookEventName.START),
-            session_id=session_id,
+            session_id=active_session_id,
             hook_event_name=HookEventName.START,
             cwd=os.getcwd(),
             prompt=user_input,
         )
 
+    message = {"content": ""}
     for turn in range(max_turns):
         response = call_llm_with_tools(
             system_prompt,
@@ -57,7 +140,12 @@ def run_agent(
         # Extract the message from the full ChatCompletionResponse
         choice = response["choices"][0]
         message = choice["message"]
-        usage = response["usage"]
+        usage = response.get("usage") or {}
+        last_usage = _normalize_usage(usage)
+        accumulated_total_tokens += int(
+            usage.get("total_tokens") or last_usage["total_tokens"] or 0
+        )
+        last_content = message.get("content") or last_content
 
         conversation.append(message)
         new_messages.append(message)
@@ -66,31 +154,36 @@ def run_agent(
             stream_actions("reasoning", {"content": message["content"]})
 
         tool_calls = message.get("tool_calls")
-        # print(f"[DEBUG] content={repr(message.get('content'))[:120]} tool_calls={bool(tool_calls)}")
         if not tool_calls:
-            if save_session_:
-                save_session(new_messages, session_id=session_id)
-                if session_id:
-                    save_context_tokens(session_id, usage["prompt_tokens"])
+            _persist(last_usage)
 
             if hooks.get(HookEventName.STOP):
                 run_hook_event(
                     path=hooks.get(HookEventName.STOP),
-                    session_id=session_id,
+                    session_id=active_session_id,
                     hook_event_name=HookEventName.STOP,
                     cwd=os.getcwd(),
                     response=message.get("content", ""),
                 )
-            return message.get("content", "")
+            return _finish(
+                ok=True,
+                result=message.get("content") or "",
+                error=None,
+                turns=turn + 1,
+            )
 
         for call in tool_calls:
             name = call["function"]["name"]
             args = json.loads(call["function"]["arguments"])
+            tools_used.append(name)
 
             fn = tool_registry[name]["fn"]
             need_confirmation = tool_registry[name]["requires_confirmation"]
             if headless and need_confirmation:
-                result = f"Agent is running in headless mode and doesn't have permission to run tool {name}."
+                result = (
+                    f"Agent is running in headless mode and doesn't have "
+                    f"permission to run tool {name}."
+                )
             elif need_confirmation and not confirm_fn(name, args):
                 result = (
                     f"User denied permission to run tool '{name}' with args {args}."
@@ -100,7 +193,7 @@ def run_agent(
                     if hooks.get(HookEventName.PRE_TOOL_USE):
                         run_hook_event(
                             path=hooks.get(HookEventName.PRE_TOOL_USE),
-                            session_id=session_id,
+                            session_id=active_session_id,
                             hook_event_name=HookEventName.PRE_TOOL_USE,
                             cwd=os.getcwd(),
                             tool_name=name,
@@ -111,10 +204,7 @@ def run_agent(
                         stream_actions("tool_call", {"name": name, "args": args})
                     result = fn(**args)
                 except Exception as e:
-                    if save_session_:
-                        save_session(new_messages, session_id=session_id)
-                        if session_id:
-                            save_context_tokens(session_id, usage["prompt_tokens"])
+                    _persist(last_usage)
                     result = f"Error: {e}"
             tool_msg = {
                 "role": "tool",
@@ -125,7 +215,7 @@ def run_agent(
             if hooks.get(HookEventName.POST_TOOL_USE):
                 run_hook_event(
                     path=hooks.get(HookEventName.POST_TOOL_USE),
-                    session_id=session_id,
+                    session_id=active_session_id,
                     hook_event_name=HookEventName.POST_TOOL_USE,
                     cwd=os.getcwd(),
                     tool_name=name,
@@ -139,22 +229,27 @@ def run_agent(
             new_messages.append(tool_msg)
 
         if token_fn:
-            token_fn(tokens_added=usage["total_tokens"], context=usage["prompt_tokens"])
+            token_fn(
+                tokens_added=last_usage["total_tokens"],
+                context=last_usage["prompt_tokens"],
+            )
 
-    if save_session_:
-        save_session(new_messages, session_id=session_id)
-        if session_id:
-            save_context_tokens(session_id, usage["prompt_tokens"])
+    _persist(last_usage)
 
     if hooks.get(HookEventName.STOP):
         run_hook_event(
             path=hooks.get(HookEventName.STOP),
-            session_id=session_id,
+            session_id=active_session_id,
             hook_event_name=HookEventName.STOP,
             cwd=os.getcwd(),
             response=message.get("content", ""),
         )
-    return "Max turns reached without a final answer."
+    return _finish(
+        ok=False,
+        result=last_content or None,
+        error="Max turns reached without a final answer.",
+        turns=max_turns,
+    )
 
 
 def _cli_confirm(tool_name: str, args: dict) -> bool:

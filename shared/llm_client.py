@@ -10,7 +10,10 @@ from shared.llm_types import (
     ToolCallFunction,
 )
 
-_RETRYABLE_EXCEPTIONS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+_RETRYABLE_EXCEPTIONS = (
+    requests.exceptions.Timeout,
+    requests.exceptions.ConnectionError,
+)
 
 
 def _post_with_retries(
@@ -20,7 +23,9 @@ def _post_with_retries(
     LLM API occasionally hangs or drops a connection mid-request."""
     for attempt in range(max_retries + 1):
         try:
-            return requests.post(endpoint, headers=headers, json=json_payload, timeout=timeout)
+            return requests.post(
+                endpoint, headers=headers, json=json_payload, timeout=timeout
+            )
         except _RETRYABLE_EXCEPTIONS:
             if attempt == max_retries:
                 raise

@@ -1,6 +1,8 @@
 import argparse
+import asyncio
+import json
+import sys
 from uuid import UUID, uuid4
-
 
 from config import settings
 from scripts.amon.tools.agent import spawn_agents
@@ -16,7 +18,6 @@ from scripts.amon.memory import (
     save_session,
 )
 from shared.llm_client import call_llm, get_context_window, parse_llm_json
-import asyncio
 
 from scripts.amon.tools.skills import catalog_for_agent
 
@@ -49,6 +50,7 @@ def main() -> None:
         "--headless", type=str, metavar="INPUT", help="Run in headless mode"
     )
 
+    parser.add_argument("--json", action="store_true", help="Output response as json")
     parser.add_argument("--agent", type=str, default="default")
     parser.add_argument("--save-session", action="store_true")
 
@@ -82,19 +84,49 @@ def main() -> None:
     _init_context_limit()
 
     if args.headless:
-        with terminal.spinner_context():
-            result = asyncio.run(
-                spawn_agents(
-                    [
-                        {
-                            "agent": args.agent,
-                            "task": args.headless,
-                            "save_session": args.save_session,
-                        }
-                    ]
+        try:
+            # --json: spinner on stderr so stdout stays pipe-clean.
+            # pretty headless: spinner on stdout with the result panels.
+            with terminal.spinner_context(stderr=bool(args.json)):
+                results = asyncio.run(
+                    spawn_agents(
+                        [
+                            {
+                                "agent": args.agent,
+                                "task": args.headless,
+                                "save_session": args.save_session,
+                            }
+                        ]
+                    )
                 )
-            )
-        terminal.print_headless_result(result)
+        except Exception as e:
+            results = [
+                {
+                    "ok": False,
+                    "agent": args.agent,
+                    "task": args.headless,
+                    "result": None,
+                    "error": str(e),
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    "turns": 0,
+                    "tools_used": [],
+                    "session_id": None,
+                }
+            ]
+
+        payload = _headless_payload(results)
+        if args.json:
+            json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
+            sys.stdout.write("\n")
+            sys.exit(0 if payload.get("ok") else 1)
+        else:
+            terminal.print_headless_result(results)
+            if not payload.get("ok"):
+                sys.exit(1)
         return
 
     _run_interactive(args)
@@ -214,6 +246,16 @@ def _sorted_sessions():
     sessions = get_list_of_sessions()
     sessions.sort(key=lambda x: x[1], reverse=True)
     return sessions
+
+
+def _headless_payload(results: list[dict]) -> dict:
+    """Normalize spawn_agents output for CLI --json consumers."""
+    if len(results) == 1:
+        return results[0]
+    return {
+        "ok": all(bool(r.get("ok")) for r in results),
+        "results": results,
+    }
 
 
 if __name__ == "__main__":

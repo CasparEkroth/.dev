@@ -19,6 +19,7 @@ Source: `scripts/amon/amon_cli.py`
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--agent` | str | `default` | Agent stem in `READY_AGENTS` |
+| `--json` | bool | false | **Headless only.** Dump the headless payload as JSON on stdout (indent=2, pipe-clean; no rich/spinner on stdout). Exit `0` if `payload.ok` else `1`. Single job → that result dict; multiple → `{ok, results}` |
 | `--save-session` | bool | false | **Headless only.** If set, persists the session; ignored in interactive mode, which always saves |
 
 ## Interactive-only commands

@@ -11,6 +11,9 @@ amon
 # headless one-shot
 amon --headless "summarize the repo structure" --agent default
 
+# headless JSON (pipe-clean stdout)
+amon --headless "summarize the repo structure" --json
+
 # resume / manage sessions
 amon --list-sessions
 amon --resume

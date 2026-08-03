@@ -21,6 +21,7 @@ amon --list-sessions
 amon --delete-session 13e5ab9e-ab29-40e3-ade9-e4b316ffdf28
 amon --keep-N-sessions 5
 amon --headless "list python packages in this repo" --agent default
+amon --headless "list python packages in this repo" --json
 ```
 
 ## Flags
@@ -36,6 +37,7 @@ Full table (exit behavior, types, defaults): [amon-author reference](examples/sk
 | `--delete-session UUID` | Delete one session |
 | `--keep-N-sessions N` / `-keep-n N` | Keep only N newest sessions |
 | `--headless INPUT` | Non-interactive single prompt |
+| `--json` | Headless only: print the result as JSON on stdout (pipe-clean) |
 | `--save-session` | Headless only: save the session (see below) |
 
 Session saving differs by mode:
@@ -71,11 +73,38 @@ Unknown `/…` commands print a dim “not a command” message.
 ## Headless flow
 
 ```text
-amon --headless TASK --agent NAME
-  → spawn_agents([{agent: NAME, task: TASK}])
+amon --headless TASK --agent NAME [--json] [--save-session]
+  → spawn_agents([{agent: NAME, task: TASK, save_session: …}])
   → Agent.run_task (headless=True)
-  → print result
+  → print result (rich panels) or JSON if --json
 ```
+
+### `--json` output
+
+With `--headless --json`, amon writes a single JSON object to stdout (no spinner/rich
+noise) and exits `0` on success / `1` on failure. Shape comes from `spawn_agents` via
+`_headless_payload`:
+
+```json
+{
+  "ok": true,
+  "agent": "default",
+  "task": "list python packages in this repo",
+  "result": "…",
+  "error": null,
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  },
+  "turns": 1,
+  "tools_used": [],
+  "session_id": null
+}
+```
+
+If multiple jobs were spawned, the payload is `{ "ok": <all ok>, "results": [ … ] }`.
+Without `--json`, the same data is rendered with `terminal.print_headless_result`.
 
 ## Sample output
 

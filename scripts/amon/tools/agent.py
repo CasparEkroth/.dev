@@ -2,7 +2,7 @@ import json
 import asyncio
 import logging
 from pathlib import Path
-from scripts.amon.agent_loop import run_agent
+from scripts.amon.agent_loop import AgentResult, run_agent
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing import Any
 from scripts.amon.tools.skills import catalog_for_agent
@@ -48,7 +48,7 @@ class Agent(BaseModel):
         except ValidationError as e:
             raise ValueError(f"Invalid agent config in {config_path}: {e}") from e
 
-    async def run_task(self, task: str, save_session: bool = True) -> str:
+    async def run_task(self, task: str, save_session: bool = True) -> AgentResult:
         from scripts.amon.tools.registry import get_registry
 
         return await asyncio.to_thread(
@@ -83,15 +83,70 @@ def load_ready_agents() -> dict[str, Agent]:
     return agents
 
 
-async def spawn_agents(jobs: list[dict]) -> dict[str, str]:
+async def spawn_agents(jobs: list[dict]) -> list[dict]:
+    """Run agent jobs concurrently and return structured result dicts."""
     from scripts.amon.tools.registry import READY_AGENTS
 
-    async def run_one(job):
-        agent = READY_AGENTS[job["agent"]]
-        result = await agent.run_task(
-            task=job["task"], save_session=job.get("save_session", True)
-        )
-        return job["agent"] + ":" + job["task"], result
+    async def run_one(job: dict) -> dict:
+        agent_name = job.get("agent", "")
+        task = job.get("task", "")
+        try:
+            if agent_name not in READY_AGENTS:
+                return {
+                    "ok": False,
+                    "agent": agent_name,
+                    "task": task,
+                    "result": None,
+                    "error": f"Unknown agent: {agent_name}",
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    "turns": 0,
+                    "tools_used": [],
+                    "session_id": None,
+                }
+            agent = READY_AGENTS[agent_name]
+            result = await agent.run_task(
+                task=task, save_session=job.get("save_session", True)
+            )
+            payload = (
+                result.to_dict()
+                if isinstance(result, AgentResult)
+                else {
+                    "ok": True,
+                    "result": result,
+                    "error": None,
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    "turns": 0,
+                    "tools_used": [],
+                    "session_id": None,
+                }
+            )
+            payload["agent"] = agent_name
+            payload["task"] = task
+            return payload
+        except Exception as e:
+            logger.exception("spawn_agents job failed for %s", agent_name)
+            return {
+                "ok": False,
+                "agent": agent_name,
+                "task": task,
+                "result": None,
+                "error": str(e),
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+                "turns": 0,
+                "tools_used": [],
+                "session_id": None,
+            }
 
-    results = await asyncio.gather(*[run_one(j) for j in jobs])
-    return dict(results)
+    return list(await asyncio.gather(*[run_one(j) for j in jobs]))
