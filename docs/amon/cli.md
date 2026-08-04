@@ -9,6 +9,7 @@ Entry point: `scripts/amon/amon_cli.py` (installed as `amon`).
 | Interactive | `amon` | REPL with slash commands, tool confirmation UI |
 | Headless | `amon --headless "…"` | Single task via `spawn_agents`, prints result |
 | Session admin | `--list-sessions`, `--delete-session`, `--keep-N-sessions` | No agent run |
+| Agent admin | `--list-agents` | Print loaded agents and exit |
 
 ## Common invocations
 
@@ -18,6 +19,7 @@ amon --agent planner
 amon --resume
 amon --resume-id 13e5ab9e-ab29-40e3-ade9-e4b316ffdf28
 amon --list-sessions
+amon --list-agents
 amon --delete-session 13e5ab9e-ab29-40e3-ade9-e4b316ffdf28
 amon --keep-N-sessions 5
 amon --headless "list python packages in this repo" --agent default
@@ -34,6 +36,7 @@ Full table (exit behavior, types, defaults): [amon-author reference](examples/sk
 | `--resume` / `-r` | Pick a session interactively |
 | `--resume-id UUID` | Resume a specific session |
 | `--list-sessions` | Print sessions and exit |
+| `--list-agents` | Print loaded agents (`name: description`) and exit |
 | `--delete-session UUID` | Delete one session |
 | `--keep-N-sessions N` / `-keep-n N` | Keep only N newest sessions |
 | `--headless INPUT` | Non-interactive single prompt |
@@ -117,6 +120,15 @@ Without `--json`, the same data is rendered with `terminal.print_headless_result
 `--list-sessions` (`terminal.print_sessions`):
 
 ![Session list output](assets/cli-list-sessions.png)
+
+`--list-agents` prints one line per loaded agent from `READY_AGENTS` (`_AGENT_DESCRIPTION_STR`):
+
+```text
+- default: General-purpose default agent with access to all available tools and skills…
+- planner: Takes a task and restructures it into a clear, ordered step-by-step plan…
+```
+
+If none are configured, it prints `No agents configured.`
 
 `--headless` result (`terminal.print_headless_result`) — one panel per job, title
 `agent — task`, body as Markdown, then a dim meta line when available:

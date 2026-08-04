@@ -10,6 +10,7 @@ Source: `scripts/amon/amon_cli.py`
 | `--resume` / `-r` | bool | no | Interactive session picker, then REPL |
 | `--resume-id` | UUID | no | Resume given session in REPL |
 | `--list-sessions` | bool | yes | Print sessions |
+| `--list-agents` | bool | yes | Print loaded agents (`- name: description` per line, or `No agents configured.`) |
 | `--delete-session` | UUID | yes | Delete session |
 | `--keep-N-sessions` / `-keep-n` | int | yes | Keep N newest sessions, delete rest |
 | `--headless` | str (`INPUT`) | yes | Run one task non-interactively |

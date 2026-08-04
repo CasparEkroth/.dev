@@ -16,6 +16,7 @@ amon --headless "summarize the repo structure" --json
 
 # resume / manage sessions
 amon --list-sessions
+amon --list-agents
 amon --resume
 amon --resume-id <uuid>
 ```

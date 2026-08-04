@@ -6,7 +6,11 @@ from uuid import UUID, uuid4
 
 from config import settings
 from scripts.amon.tools.agent import spawn_agents
-from scripts.amon.tools.registry import get_registry, READY_AGENTS
+from scripts.amon.tools.registry import (
+    _AGENT_DESCRIPTION_STR,
+    get_registry,
+    READY_AGENTS,
+)
 from scripts.amon.agent_loop import run_agent
 from scripts.amon import terminal
 from scripts.amon.memory import (
@@ -39,6 +43,7 @@ def main() -> None:
     )
     command.add_argument("--resume-id", type=UUID, help="Resume session by ID")
     command.add_argument("--list-sessions", action="store_true", help="List sessions")
+    command.add_argument("--list-agents", action="store_true", help="List agents")
     command.add_argument("--delete-session", type=UUID, help="Delete session by ID")
     command.add_argument(
         "--keep-N-sessions",
@@ -63,9 +68,28 @@ def main() -> None:
     if args.json and not args.headless:
         parser.error("--json requires --headless")
 
+    if (
+        args.list_sessions
+        or args.delete_session
+        or args.keep_N_sessions
+        or args.list_agents
+    ):
+        if args.save_session or args.json or args.agent != "default":
+            parser.error(
+                "session management flags can't be combined with "
+                "--agent/--save-session/--json"
+            )
+
+    if args.save_session and not args.headless:
+        parser.error("--save-session requires --headless")
+
     if args.list_sessions:
         sessions = _sorted_sessions()
         terminal.print_sessions(sessions)
+        return
+
+    if args.list_agents:
+        terminal.console.print(_AGENT_DESCRIPTION_STR)
         return
 
     if args.delete_session:
