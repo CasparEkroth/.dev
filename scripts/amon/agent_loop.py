@@ -45,7 +45,8 @@ def _empty_usage() -> dict[str, int]:
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
-def _normalize_usage(raw: dict | None, accumulated_total: int = 0) -> dict[str, int]:
+def _turn_usage(raw: dict | None) -> dict[str, int]:
+    """Normalize one LLM response usage blob."""
     raw = raw or {}
     prompt = int(raw.get("prompt_tokens") or 0)
     completion = int(raw.get("completion_tokens") or 0)
@@ -53,8 +54,16 @@ def _normalize_usage(raw: dict | None, accumulated_total: int = 0) -> dict[str, 
     return {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
-        # Prefer full-run total when provided by caller.
-        "total_tokens": accumulated_total or total,
+        "total_tokens": total,
+    }
+
+
+def _add_usage(acc: dict[str, int], turn: dict[str, int]) -> dict[str, int]:
+    """Accumulate usage across turns (full-run totals)."""
+    return {
+        "prompt_tokens": acc["prompt_tokens"] + turn["prompt_tokens"],
+        "completion_tokens": acc["completion_tokens"] + turn["completion_tokens"],
+        "total_tokens": acc["total_tokens"] + turn["total_tokens"],
     }
 
 
@@ -88,8 +97,10 @@ def run_agent(
     new_messages = [{"role": "user", "content": user_input}]
 
     tools_used: list[str] = []
-    accumulated_total_tokens = 0
+    # last_usage = latest turn (context window size for footer/persist).
+    # accumulated_usage = sum across turns (what AgentResult.usage reports).
     last_usage = _empty_usage()
+    accumulated_usage = _empty_usage()
     last_content = ""
     active_session_id = session_id
 
@@ -99,6 +110,7 @@ def run_agent(
             return
         active_session_id = save_session(new_messages, session_id=active_session_id)
         if active_session_id:
+            # Context size is the latest prompt window, not the run sum.
             save_context_tokens(active_session_id, usage_dict.get("prompt_tokens", 0))
 
     def _finish(
@@ -113,7 +125,7 @@ def run_agent(
             ok=ok,
             result=result,
             error=error,
-            usage=_normalize_usage(last_usage, accumulated_total_tokens),
+            usage=dict(accumulated_usage),
             turns=turns,
             tools_used=list(tools_used),
             session_id=sid,
@@ -140,11 +152,8 @@ def run_agent(
         # Extract the message from the full ChatCompletionResponse
         choice = response["choices"][0]
         message = choice["message"]
-        usage = response.get("usage") or {}
-        last_usage = _normalize_usage(usage)
-        accumulated_total_tokens += int(
-            usage.get("total_tokens") or last_usage["total_tokens"] or 0
-        )
+        last_usage = _turn_usage(response.get("usage"))
+        accumulated_usage = _add_usage(accumulated_usage, last_usage)
         last_content = message.get("content") or last_content
 
         conversation.append(message)

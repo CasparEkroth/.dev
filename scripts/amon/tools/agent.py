@@ -108,8 +108,9 @@ async def spawn_agents(jobs: list[dict]) -> list[dict]:
                     "session_id": None,
                 }
             agent = READY_AGENTS[agent_name]
+            # Default False: match CLI headless (opt-in via --save-session / job flag).
             result = await agent.run_task(
-                task=task, save_session=job.get("save_session", True)
+                task=task, save_session=bool(job.get("save_session", False))
             )
             payload = (
                 result.to_dict()

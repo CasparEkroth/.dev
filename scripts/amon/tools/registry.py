@@ -1,4 +1,5 @@
 import asyncio
+import asyncio
 import json
 from typing import Literal
 
@@ -174,7 +175,13 @@ tool_registry["spawn_agents"] = {
         "type": "function",
         "function": {
             "name": "spawn_agents",
-            "description": "Spawn one or more agents to run tasks concurrently. Blocks until all agents finish and returns their results.",
+            "description": (
+                "Spawn one or more agents to run tasks concurrently. Blocks until all "
+                "agents finish. Returns a JSON string: a list of result objects with keys "
+                "ok, agent, task, result, error, usage, turns, tools_used, session_id. "
+                "Check ok on each item — result may be partial when ok is false "
+                "(e.g. max turns). Sessions are not saved unless save_session=true."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -192,6 +199,14 @@ tool_registry["spawn_agents"] = {
                                 "task": {
                                     "type": "string",
                                     "description": "The task/instruction to give to the agent",
+                                },
+                                "save_session": {
+                                    "type": "boolean",
+                                    "description": (
+                                        "If true, persist this job's session. "
+                                        "Default false."
+                                    ),
+                                    "default": False,
                                 },
                             },
                             "required": ["agent", "task"],

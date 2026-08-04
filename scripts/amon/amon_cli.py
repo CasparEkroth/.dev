@@ -50,11 +50,18 @@ def main() -> None:
         "--headless", type=str, metavar="INPUT", help="Run in headless mode"
     )
 
-    parser.add_argument("--json", action="store_true", help="Output response as json")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Headless only: print the result as JSON on stdout",
+    )
     parser.add_argument("--agent", type=str, default="default")
     parser.add_argument("--save-session", action="store_true")
 
     args = parser.parse_args()
+
+    if args.json and not args.headless:
+        parser.error("--json requires --headless")
 
     if args.list_sessions:
         sessions = _sorted_sessions()
@@ -211,7 +218,7 @@ def _run_interactive(args) -> None:
 
         with terminal.spinner_context():
             try:
-                run_agent(
+                result = run_agent(
                     system_prompt=agent.system_prompt,
                     user_input=user_input,
                     tool_registry=get_registry(
@@ -226,8 +233,24 @@ def _run_interactive(args) -> None:
                     hooks=agent.hooks,
                 )
             except KeyboardInterrupt:
+                # Hard cancel: in-flight HTTP is aborted; no delayed receive.
+                # ESC is not handled — only Ctrl+C raises KeyboardInterrupt.
                 terminal.console.print("\n[yellow]Interrupted.[/yellow]")
                 continue
+
+            # Streaming already showed content; surface structured failure meta.
+            if not result.ok:
+                err = result.error or "Agent run failed."
+                terminal.console.print(f"[red]{err}[/red]")
+                meta_parts = []
+                if result.usage.get("total_tokens"):
+                    meta_parts.append(f"tokens={result.usage['total_tokens']}")
+                if result.turns:
+                    meta_parts.append(f"turns={result.turns}")
+                if result.tools_used:
+                    meta_parts.append(f"tools={', '.join(result.tools_used)}")
+                if meta_parts:
+                    terminal.console.print(f"[dim]{' · '.join(meta_parts)}[/dim]")
 
 
 def _resolve_session_id(args) -> UUID | None:

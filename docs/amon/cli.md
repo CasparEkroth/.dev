@@ -37,14 +37,15 @@ Full table (exit behavior, types, defaults): [amon-author reference](examples/sk
 | `--delete-session UUID` | Delete one session |
 | `--keep-N-sessions N` / `-keep-n N` | Keep only N newest sessions |
 | `--headless INPUT` | Non-interactive single prompt |
-| `--json` | Headless only: print the result as JSON on stdout (pipe-clean) |
+| `--json` | Headless only: print the result as JSON on stdout (pipe-clean). Errors if used without `--headless` |
 | `--save-session` | Headless only: save the session (see below) |
 
 Session saving differs by mode:
 
 - **Interactive**: always saves — every turn runs with `save_session_=True` hardcoded.
-- **Headless**: does **not** save by default. Pass `--save-session` to persist the
-  session (threaded through `spawn_agents` → `Agent.run_task(save_session=...)`).
+- **Headless CLI**: does **not** save by default. Pass `--save-session` to persist.
+- **`spawn_agents` (API/tool)**: also defaults `save_session=false` per job; set
+  `save_session: true` on a job to persist.
 
 ## Interactive slash commands
 
@@ -103,8 +104,13 @@ noise) and exits `0` on success / `1` on failure. Shape comes from `spawn_agents
 }
 ```
 
+`usage` fields are **full-run sums** across turns (not last-turn only).
+When `ok` is false (unknown agent, exception, max turns), check `error`; `result`
+may still hold partial content (especially on max-turns).
+
 If multiple jobs were spawned, the payload is `{ "ok": <all ok>, "results": [ … ] }`.
 Without `--json`, the same data is rendered with `terminal.print_headless_result`.
+`--json` without `--headless` is rejected by the CLI.
 
 ## Sample output
 
@@ -112,16 +118,22 @@ Without `--json`, the same data is rendered with `terminal.print_headless_result
 
 ![Session list output](assets/cli-list-sessions.png)
 
-`--headless` result (`terminal.print_headless_result`) — one panel per job, titled
-`agent:task`, body rendered as Markdown:
+`--headless` result (`terminal.print_headless_result`) — one panel per job, title
+`agent — task`, body as Markdown, then a dim meta line when available:
 
 ```text
-╭─ default:list python packages in this repo ──────────────────────╮
+╭─ default — list python packages in this repo ────────────────────╮
 │ Found 3 packages: shared, scripts.amon, config                   │
-╰────────────────────────────────────────────────────────────────╯
+╰──────────────────────────────────────────────────────────────────╯
+tokens=1434 · turns=3 · tools=shell_readonly, read_file
 ```
+
+Failed jobs use a red panel with `error` instead of the result body.
 
 Interactive mode opens with a welcome panel (`terminal.show_welcome`) showing the
 agent name and slash-command hints, then replays prior turns if `--resume`/`--resume-id`
 loaded an existing session. A footer tracks token usage against the context limit
 fetched once at startup via `_init_context_limit` (`get_context_window`).
+
+Ctrl+C during an interactive `run_agent` hard-cancels the current run (no delayed
+receive of the in-flight LLM response). ESC is not a cancel key.

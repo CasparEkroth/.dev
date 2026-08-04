@@ -114,7 +114,10 @@ def test_headless_payload_single_and_multi():
 def test_spawn_agents():
     from scripts.amon.tools.registry import READY_AGENTS
 
+    seen = {}
+
     async def async_run_task(task: str, save_session: bool = True):
+        seen["save_session"] = save_session
         return AgentResult(
             ok=True,
             result="result",
@@ -137,6 +140,26 @@ def test_spawn_agents():
         assert results[0]["task"] == "do something"
         assert results[0]["result"] == "result"
         assert results[0]["tools_used"] == ["shell"]
+        # Default must be False (match CLI headless / docs).
+        assert seen["save_session"] is False
+
+
+def test_spawn_agents_save_session_opt_in():
+    from scripts.amon.tools.registry import READY_AGENTS
+
+    seen = {}
+
+    async def async_run_task(task: str, save_session: bool = True):
+        seen["save_session"] = save_session
+        return AgentResult(ok=True, result="ok")
+
+    mock_agent = MagicMock()
+    mock_agent.run_task = async_run_task
+    with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
+        asyncio.run(
+            spawn_agents([{"agent": "test", "task": "t", "save_session": True}])
+        )
+        assert seen["save_session"] is True
 
 
 def test_spawn_agents_unknown_agent():
@@ -147,3 +170,103 @@ def test_spawn_agents_unknown_agent():
         assert results[0]["ok"] is False
         assert results[0]["error"] == "Unknown agent: missing"
         assert results[0]["result"] is None
+
+
+def test_usage_accumulates_across_turns():
+    from scripts.amon.agent_loop import _add_usage, _empty_usage, _turn_usage
+
+    a = _turn_usage({"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12})
+    b = _turn_usage({"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23})
+    acc = _add_usage(_add_usage(_empty_usage(), a), b)
+    assert acc == {
+        "prompt_tokens": 30,
+        "completion_tokens": 5,
+        "total_tokens": 35,
+    }
+
+
+def test_print_headless_result_list_and_error(capsys):
+    from scripts.amon import terminal
+
+    terminal.print_headless_result(
+        [
+            {
+                "ok": True,
+                "agent": "default",
+                "task": "list packages",
+                "result": "Found 3 packages",
+                "usage": {"total_tokens": 100},
+                "turns": 2,
+                "tools_used": ["shell_readonly"],
+            },
+            {
+                "ok": False,
+                "agent": "planner",
+                "task": "plan",
+                "result": None,
+                "error": "Unknown agent: planner",
+            },
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "default" in out
+    assert "list packages" in out
+    assert "Found 3 packages" in out
+    assert "tokens=100" in out
+    assert "turns=2" in out
+    assert "shell_readonly" in out
+    assert "Unknown agent: planner" in out
+
+
+def test_json_requires_headless():
+    import argparse
+    from scripts.amon.amon_cli import main
+
+    with patch(
+        "argparse.ArgumentParser.parse_args",
+        return_value=argparse.Namespace(
+            resume=False,
+            resume_id=None,
+            list_sessions=False,
+            delete_session=None,
+            keep_N_sessions=None,
+            headless=None,
+            json=True,
+            agent="default",
+            save_session=False,
+        ),
+    ):
+        # argparse.ArgumentParser.error raises SystemExit
+        try:
+            main()
+            raised = False
+        except SystemExit as e:
+            raised = True
+            assert e.code == 2
+        assert raised, "--json without --headless should SystemExit(2)"
+
+
+def test_spawn_agents_tool_returns_json_string():
+    from scripts.amon.tools.registry import READY_AGENTS, _spawn_agents
+
+    async def async_run_task(task: str, save_session: bool = False):
+        return AgentResult(ok=True, result="hi", tools_used=[])
+
+    mock_agent = MagicMock()
+    mock_agent.run_task = async_run_task
+    with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
+        raw = _spawn_agents(jobs=[{"agent": "test", "task": "t"}])
+        assert isinstance(raw, str)
+        data = json.loads(raw)
+        assert data[0]["ok"] is True
+        assert data[0]["result"] == "hi"
+
+
+def test_spawn_agents_tool_schema_documents_save_session():
+    from scripts.amon.tools.registry import tool_registry
+
+    schema = tool_registry["spawn_agents"]["schema"]["function"]
+    props = schema["parameters"]["properties"]["jobs"]["items"]["properties"]
+    assert "save_session" in props
+    assert "JSON" in schema["description"] or "json" in schema["description"].lower()
+    assert "ok" in schema["description"]
