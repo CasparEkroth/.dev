@@ -38,7 +38,7 @@ Full table (exit behavior, types, defaults): [amon-author reference](examples/sk
 | `--list-sessions` | Print sessions and exit |
 | `--list-agents` | Print loaded agents (`name: description`) and exit |
 | `--delete-session UUID` | Delete one session |
-| `--keep-N-sessions N` / `-keep-n N` | Keep only N newest sessions |
+| `--keep-N-sessions N` / `-keep N` | Keep only N newest sessions |
 | `--headless INPUT` | Non-interactive single prompt |
 | `--json` | Headless only: print the result as JSON on stdout (pipe-clean). Errors if used without `--headless` |
 | `--save-session` | Headless only: save the session (see below) |

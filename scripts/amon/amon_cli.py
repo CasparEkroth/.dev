@@ -47,7 +47,7 @@ def main() -> None:
     command.add_argument("--delete-session", type=UUID, help="Delete session by ID")
     command.add_argument(
         "--keep-N-sessions",
-        "-keep-n",
+        "-keep",
         type=int,
         help="Keeps only the N latest sessions",
     )
@@ -61,6 +61,7 @@ def main() -> None:
         help="Headless only: print the result as JSON on stdout",
     )
     parser.add_argument("--agent", type=str, default="default")
+
     parser.add_argument("--save-session", action="store_true")
 
     args = parser.parse_args()

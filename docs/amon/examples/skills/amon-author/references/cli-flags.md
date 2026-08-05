@@ -12,7 +12,7 @@ Source: `scripts/amon/amon_cli.py`
 | `--list-sessions` | bool | yes | Print sessions |
 | `--list-agents` | bool | yes | Print loaded agents (`- name: description` per line, or `No agents configured.`) |
 | `--delete-session` | UUID | yes | Delete session |
-| `--keep-N-sessions` / `-keep-n` | int | yes | Keep N newest sessions, delete rest |
+| `--keep-N-sessions` / `-keep` | int | yes | Keep N newest sessions, delete rest |
 | `--headless` | str (`INPUT`) | yes | Run one task non-interactively |
 
 ## Other flags

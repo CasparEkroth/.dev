@@ -207,12 +207,46 @@ def _format_args(args) -> str:
         return str(args)
 
 
+def _format_write(args: dict | list | None) -> str:
+    """Format write_file args with red old / green new markup.
+
+    write_file tool args look like:
+      {"content": [{"path": "...", "old": "...", "new": "..."}, ...]}
+    """
+    from rich.markup import escape
+
+    if isinstance(args, dict):
+        items = args.get("content") or []
+    elif isinstance(args, list):
+        items = args
+    else:
+        items = []
+
+    parts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        path = escape(str(item.get("path") or ""))
+        old_text = escape(str(item.get("old") or "-"))
+        new_text = escape(str(item.get("new") or ""))
+        parts.append(
+            f"[cyan]{path}[/cyan]\n"
+            f"[bold red]- {old_text}[/bold red]\n"
+            f"[bold green]+ {new_text}[/bold green]"
+        )
+    return "\n\n".join(parts) if parts else _format_args(args)
+
+
 def confirm_tool(name: str, args: dict) -> bool:
     # Pause Live so questionary and the confirm panel own the terminal cleanly.
+    if name == "write_file":
+        formatted = f"[bold yellow]{name}[/bold yellow]\n{_format_write(args)}"
+    else:
+        formatted = f"[bold yellow]{name}[/bold yellow]\n[dim]{_format_args(args)}[/dim]"
     with _pause_live():
         console.print(
             Panel(
-                f"[bold yellow]{name}[/bold yellow]\n[dim]{_format_args(args)}[/dim]",
+                formatted,
                 title="[yellow]⚠ Tool Request[/yellow]",
                 border_style="yellow",
             )
@@ -230,9 +264,15 @@ def stream_action(event: str, data: dict) -> None:
             )
         )
     elif event == "tool_call":
+        if data.get("name") == "write_file":
+            formated = _format_write(data.get("args"))
+            body = f"[bold]{data.get('name')}[/bold]\n{formated}"
+        else:
+            formated = _format_args(data.get("args"))
+            body = f"[bold]{data.get('name')}[/bold]\n[dim]{formated}[/dim]"
         _ui_print(
             Panel(
-                f"[bold]{data.get('name')}[/bold]\n[dim]{_format_args(data.get('args'))}[/dim]",
+                body,
                 title="[cyan]→ Tool[/cyan]",
                 border_style="cyan",
             )
