@@ -1,5 +1,7 @@
 from contextlib import contextmanager
 from pathlib import Path
+import pprint
+import sys
 import time
 from uuid import UUID
 
@@ -22,6 +24,8 @@ from scripts.amon.tools.registry import READY_AGENTS
 from config import BASE_CONTEXT_WINDOW
 
 console = Console()
+# Used only when stdout must stay machine-readable (e.g. --json).
+_stderr_console = Console(file=sys.stderr)
 _live: "Live | None" = None
 
 
@@ -55,8 +59,7 @@ class StatusFooter:
                 else 0.0
             )
         return HTML(
-            f"Tokens: <b>{self.tokens:,}</b>   |   "
-            f"Context: <b>{ctx}</b> ({pct:.1f}%)"
+            f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
         )
 
 
@@ -117,19 +120,49 @@ def show_welcome(session_id: UUID) -> None:
 
 
 @contextmanager
-def spinner_context(label: str = "Thinking…"):
+def spinner_context(label: str = "Thinking…", *, stderr: bool = False):
+    """Show a transient spinner while work runs.
+
+    Interactive / pretty output must share the same Console as panels, otherwise
+    Live (spinner) and stdout prints fight over the cursor and borders clip.
+
+    Pass stderr=True only for machine-readable modes (--json) so stdout stays clean.
+    """
     global _live
+    target = _stderr_console if stderr else console
     with Live(
         Spinner("dots", text=f" {label}"),
-        console=console,
+        console=target,
         transient=True,
         refresh_per_second=10,
+        # vertical_overflow keeps long panel prints from shredding the live line
+        vertical_overflow="visible",
     ) as live:
         _live = live
         try:
             yield
         finally:
             _live = None
+
+
+@contextmanager
+def _pause_live():
+    """Stop the spinner Live around multi-line UI so borders don't clip/race."""
+    live = _live
+    if live is not None:
+        live.stop()
+    try:
+        yield
+    finally:
+        if live is not None and _live is live:
+            # Only restart if spinner_context still owns this Live instance.
+            live.start()
+
+
+def _ui_print(*args, **kwargs) -> None:
+    """Print UI chrome without fighting the active spinner."""
+    with _pause_live():
+        console.print(*args, **kwargs)
 
 
 def _toolbar_text():
@@ -165,26 +198,65 @@ def pick_session(sessions: list[tuple[Path, float]]) -> Path | None:
     return questionary.select("Pick a session to resume:", choices=choices).ask()
 
 
-def confirm_tool(name: str, args: dict) -> bool:
-    if _live is not None:
-        _live.stop()
+def _format_args(args) -> str:
+    """Pretty-format tool args so panel borders wrap cleanly."""
+    width = max(40, (console.width or 80) - 8)
     try:
+        return pprint.pformat(args, width=width, compact=True, sort_dicts=False)
+    except Exception:
+        return str(args)
+
+
+def _format_write(args: dict | list | None) -> str:
+    """Format write_file args with red old / green new markup.
+
+    write_file tool args look like:
+      {"content": [{"path": "...", "old": "...", "new": "..."}, ...]}
+    """
+    from rich.markup import escape
+
+    if isinstance(args, dict):
+        items = args.get("content") or []
+    elif isinstance(args, list):
+        items = args
+    else:
+        items = []
+
+    parts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        path = escape(str(item.get("path") or ""))
+        old_text = escape(str(item.get("old") or "-"))
+        new_text = escape(str(item.get("new") or ""))
+        parts.append(
+            f"[cyan]{path}[/cyan]\n"
+            f"[bold red]- {old_text}[/bold red]\n"
+            f"[bold green]+ {new_text}[/bold green]"
+        )
+    return "\n\n".join(parts) if parts else _format_args(args)
+
+
+def confirm_tool(name: str, args: dict) -> bool:
+    # Pause Live so questionary and the confirm panel own the terminal cleanly.
+    if name == "write_file":
+        formatted = f"[bold yellow]{name}[/bold yellow]\n{_format_write(args)}"
+    else:
+        formatted = f"[bold yellow]{name}[/bold yellow]\n[dim]{_format_args(args)}[/dim]"
+    with _pause_live():
         console.print(
             Panel(
-                f"[bold yellow]{name}[/bold yellow]\n[dim]{args}[/dim]",
+                formatted,
                 title="[yellow]⚠ Tool Request[/yellow]",
                 border_style="yellow",
             )
         )
-        return questionary.confirm("Allow?", default=False).ask()
-    finally:
-        if _live is not None:
-            _live.start()
+        return bool(questionary.confirm("Allow?", default=False).ask())
 
 
 def stream_action(event: str, data: dict) -> None:
     if event == "reasoning":
-        console.print(
+        _ui_print(
             Panel(
                 Markdown(data.get("content", "")),
                 title="[bold green]Agent[/bold green]",
@@ -192,9 +264,15 @@ def stream_action(event: str, data: dict) -> None:
             )
         )
     elif event == "tool_call":
-        console.print(
+        if data.get("name") == "write_file":
+            formated = _format_write(data.get("args"))
+            body = f"[bold]{data.get('name')}[/bold]\n{formated}"
+        else:
+            formated = _format_args(data.get("args"))
+            body = f"[bold]{data.get('name')}[/bold]\n[dim]{formated}[/dim]"
+        _ui_print(
             Panel(
-                f"[bold]{data.get('name')}[/bold]\n[dim]{data.get('args')}[/dim]",
+                body,
                 title="[cyan]→ Tool[/cyan]",
                 border_style="cyan",
             )
@@ -209,7 +287,7 @@ def stream_action(event: str, data: dict) -> None:
                 + str(len(content))
                 + " chars total)"
             )
-        console.print(
+        _ui_print(
             Panel(
                 content,
                 title=f"[dim]← Result from {data.get('name', 'tool')}[/dim]",
@@ -254,7 +332,44 @@ def pick_agents(agents: dict[str, Agent] = READY_AGENTS) -> str | None:
     return questionary.select("Pick a agent to use:", choices=choices).ask()
 
 
-def print_headless_result(results: dict[str, str]) -> None:
+def print_headless_result(results: list[dict] | dict) -> None:
     """Pretty-print results returned by spawn_agents in --headless mode."""
-    for key, value in results.items():
-        console.print(Panel(Markdown(value), title=f"[bold cyan]{key}[/bold cyan]"))
+    if isinstance(results, dict):
+        # Backward-compat: {"agent:task": "text"} or single payload dict.
+        if "agent" in results or "result" in results:
+            items = [results]
+        else:
+            items = [
+                {"agent": key, "task": "", "result": value, "ok": True}
+                for key, value in results.items()
+            ]
+    else:
+        items = results
+
+    for item in items:
+        agent = item.get("agent") or "agent"
+        task = item.get("task") or ""
+        title = f"[bold cyan]{agent}[/bold cyan]"
+        if task:
+            title = f"{title} [dim]— {task}[/dim]"
+
+        if item.get("ok", True):
+            body = item.get("result") or ""
+            console.print(Panel(Markdown(str(body)), title=title, border_style="cyan"))
+        else:
+            err = item.get("error") or "Unknown error"
+            console.print(Panel(f"[red]{err}[/red]", title=title, border_style="red"))
+
+        meta_parts = []
+        usage = item.get("usage") or {}
+        if usage.get("total_tokens"):
+            meta_parts.append(f"tokens={usage['total_tokens']}")
+        if item.get("turns"):
+            meta_parts.append(f"turns={item['turns']}")
+        tools_used = item.get("tools_used") or []
+        if tools_used:
+            meta_parts.append(f"tools={', '.join(tools_used)}")
+        if item.get("session_id"):
+            meta_parts.append(f"session={item['session_id']}")
+        if meta_parts:
+            console.print(f"[dim]{' · '.join(meta_parts)}[/dim]")

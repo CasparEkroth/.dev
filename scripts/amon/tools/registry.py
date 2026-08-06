@@ -1,10 +1,11 @@
 import asyncio
+import asyncio
+import json
+from typing import Literal
 
 from scripts.amon.tools.agent import load_ready_agents
 from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
-from typing import Literal
-
 from scripts.amon.tools.skills import load_skill
 
 _READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
@@ -13,7 +14,9 @@ _READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
 def _spawn_agents(*args, **kwargs):
     from scripts.amon.tools.agent import spawn_agents
 
-    return asyncio.run(spawn_agents(*args, **kwargs))
+    results = asyncio.run(spawn_agents(*args, **kwargs))
+    # Tool calls need a string/JSON-serializable payload for the LLM.
+    return json.dumps(results, ensure_ascii=False, indent=2)
 
 
 # tool_registry must be defined before load_ready_agents() is called,
@@ -172,7 +175,13 @@ tool_registry["spawn_agents"] = {
         "type": "function",
         "function": {
             "name": "spawn_agents",
-            "description": "Spawn one or more agents to run tasks concurrently. Blocks until all agents finish and returns their results.",
+            "description": (
+                "Spawn one or more agents to run tasks concurrently. Blocks until all "
+                "agents finish. Returns a JSON string: a list of result objects with keys "
+                "ok, agent, task, result, error, usage, turns, tools_used, session_id. "
+                "Check ok on each item — result may be partial when ok is false "
+                "(e.g. max turns). Sessions are not saved unless save_session=true."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -190,6 +199,14 @@ tool_registry["spawn_agents"] = {
                                 "task": {
                                     "type": "string",
                                     "description": "The task/instruction to give to the agent",
+                                },
+                                "save_session": {
+                                    "type": "boolean",
+                                    "description": (
+                                        "If true, persist this job's session. "
+                                        "Default false."
+                                    ),
+                                    "default": False,
                                 },
                             },
                             "required": ["agent", "task"],
