@@ -6,8 +6,6 @@ The current setup installs Python-based scripts into your local bin directory
 as shell commands you can run from anywhere. Today the repo ships with
 `git-suggest`, `vector-index`, `search` and `amon`.
 
-It also includes a ready-to-use Neovim config under `scripts/nvim_config/`.
-
 Longer-form docs live under [`docs/`](docs/index.md).
 
 
@@ -30,23 +28,6 @@ The installer currently creates the commands listed in the `scripts/bin` and pla
 
 If `~/.local/bin` is not on your `PATH`, the setup script will try to add it to
 `~/.zshrc` and tell you to reload your shell.
-
-### Neovim config
-
-This repo also ships a Python-focused Neovim setup (LSP, completion, file tree,
-Treesitter, and more) in `scripts/nvim_config/`.
-
-Install it with:
-
-```bash
-chmod +x scripts/nvim_config/setup_nvim
-./scripts/nvim_config/setup_nvim
-```
-
-That copies `init.lua` and `lazy-lock.json` into `~/.config/nvim/`. On first
-launch, Neovim/lazy.nvim will install the configured plugins.
-
-Requires Neovim and `git`.
 
 ## Use
 
@@ -100,4 +81,3 @@ make test
 - Python 3
 - `git`
 - A shell that can run the `setup` script
-- Neovim (only needed for the optional nvim config install)
