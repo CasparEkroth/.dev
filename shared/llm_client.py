@@ -145,40 +145,14 @@ def _apply_reasoning_overrides(kwargs: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _tool_choice_value(
-    force_tool: bool,
-    tool_definitions: list | dict | None,
-    provider: str,
-) -> str | dict[str, Any]:
-    """Build the ``tool_choice`` argument for a chat-completions call."""
-    if not force_tool:
-        return "auto"
-    # Older Azure api-versions reject tool_choice="required". Force the first
-    # named function instead so force_tool semantics are preserved.
-    if provider == "azure":
-        first_name = _first_tool_name(tool_definitions)
-        if first_name is not None:
-            return {"type": "function", "function": {"name": first_name}}
-    return "required"
+def _tool_choice_value(force_tool: bool) -> str:
+    """Build the ``tool_choice`` argument for a chat-completions call.
 
-
-def _first_tool_name(tool_definitions: list | dict | None) -> str | None:
-    """Extract the first function tool name from an OpenAI tools payload."""
-    if not tool_definitions:
-        return None
-    tools = tool_definitions
-    if isinstance(tools, dict):
-        tools = list(tools.values())
-    for tool in tools:
-        if not isinstance(tool, dict):
-            continue
-        fn = tool.get("function") if tool.get("type") == "function" else None
-        if isinstance(fn, dict) and fn.get("name"):
-            return fn["name"]
-        # Tolerate a bare {"name": ...} shape just in case.
-        if tool.get("name"):
-            return tool["name"]
-    return None
+    ``"required"`` means the model must call *some* tool (any of the
+    provided definitions). Azure OpenAI has supported this since API
+    version ``2024-06-01``; our default ``AZURE_API_VERSION`` is newer.
+    """
+    return "required" if force_tool else "auto"
 
 
 def _parse_xml_tool_calls(content: str) -> list[dict] | None:
@@ -246,15 +220,23 @@ def parse_llm_json(text: str) -> list | dict | None:
         return None
 
 
-def call_llm_with_config(base_url: str, api_key: str, model: str, prompt: str) -> str:
+def call_llm_with_config(
+    base_url: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    provider: str | None = None,
+) -> str:
     """Chat-completion helper that takes explicit connection parameters.
 
     Builds a one-off client (does not touch the process-wide cache) so callers
-    can target a different endpoint than ``settings``.
+    can target a different endpoint than ``settings``. Pass *provider*
+    explicitly when it can't be inferred from *base_url* (e.g. a custom Azure
+    gateway domain).
     """
-    provider = resolve_provider(base_url=base_url)
+    resolved = resolve_provider(provider=provider, base_url=base_url)
     timeout = httpx.Timeout(60.0, connect=10.0)
-    if provider == "azure":
+    if resolved == "azure":
         client: OpenAI | AzureOpenAI = AzureOpenAI(
             azure_endpoint=_normalize_base_url(base_url),
             api_key=api_key,
@@ -342,8 +324,8 @@ def _xai_context_window(base_url: str, api_key: str, model: str) -> int | None:
 
 def call_llm_with_tools(
     system_prompt: str,
-    conversation_history: dict,
-    tool_definitions: dict,
+    conversation_history: list,
+    tool_definitions: list | dict | None,
     force_tool: bool = False,
 ) -> dict:
     """Chat completion with optional tool definitions.
@@ -364,9 +346,7 @@ def call_llm_with_tools(
     }
     if tool_definitions:
         kwargs["tools"] = tool_definitions
-        kwargs["tool_choice"] = _tool_choice_value(
-            force_tool, tool_definitions, provider
-        )
+        kwargs["tool_choice"] = _tool_choice_value(force_tool)
     kwargs = _apply_reasoning_overrides(kwargs)
 
     sdk_response = client.chat.completions.create(**kwargs)

@@ -238,19 +238,12 @@ def test_reset_llm_client_clears_cache(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_tool_choice_required_on_xai():
-    assert _tool_choice_value(True, [SAMPLE_TOOL], "xai") == "required"
-    assert _tool_choice_value(True, [SAMPLE_TOOL], "openai") == "required"
-
-
-def test_tool_choice_named_function_on_azure():
-    choice = _tool_choice_value(True, [SAMPLE_TOOL], "azure")
-    assert choice == {"type": "function", "function": {"name": "shell"}}
+def test_tool_choice_required_when_forced():
+    assert _tool_choice_value(True) == "required"
 
 
 def test_tool_choice_auto_when_not_forced():
-    assert _tool_choice_value(False, [SAMPLE_TOOL], "azure") == "auto"
-    assert _tool_choice_value(False, [SAMPLE_TOOL], "xai") == "auto"
+    assert _tool_choice_value(False) == "auto"
 
 
 def test_call_llm_with_tools_force_tool_xai(monkeypatch):
@@ -294,10 +287,9 @@ def test_call_llm_with_tools_force_tool_azure(monkeypatch):
     )
     kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert kwargs["model"] == "my-gpt-deployment"  # deployment name
-    assert kwargs["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "shell"},
-    }
+    # Must be "required" (any tool), not a single named function — otherwise
+    # multi-tool agents can only call whichever tool is listed first.
+    assert kwargs["tool_choice"] == "required"
 
 
 # ---------------------------------------------------------------------------

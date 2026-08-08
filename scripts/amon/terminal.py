@@ -242,7 +242,9 @@ def confirm_tool(name: str, args: dict) -> bool:
     if name == "write_file":
         formatted = f"[bold yellow]{name}[/bold yellow]\n{_format_write(args)}"
     else:
-        formatted = f"[bold yellow]{name}[/bold yellow]\n[dim]{_format_args(args)}[/dim]"
+        formatted = (
+            f"[bold yellow]{name}[/bold yellow]\n[dim]{_format_args(args)}[/dim]"
+        )
     with _pause_live():
         console.print(
             Panel(
