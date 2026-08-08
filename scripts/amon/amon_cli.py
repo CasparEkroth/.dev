@@ -28,7 +28,10 @@ from scripts.amon.tools.skills import catalog_for_agent
 
 def _init_context_limit() -> None:
     limit = get_context_window(
-        settings.LLM_BASE_URL, settings.LLM_API_KEY, settings.LLM_MODEL
+        settings.LLM_BASE_URL,
+        settings.LLM_API_KEY,
+        settings.LLM_MODEL,
+        provider=settings.LLM_PROVIDER,
     )
     if limit:
         terminal.set_context_limit(limit)

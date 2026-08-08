@@ -13,3 +13,4 @@ prompt_toolkit
 questionary
 pytest
 python-frontmatter
+openai==1.82.0
