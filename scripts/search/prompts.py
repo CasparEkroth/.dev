@@ -61,9 +61,15 @@ Files provided by the user:
 
 Instructions:
 
-- Base your answer primarily on the provided files.
-- Use general knowledge only when it does not contradict the files.
-- If the information is insufficient, state what is missing.
+- If files are provided above, base your answer primarily on them, and use
+  general knowledge only when it does not contradict them.
+- If no files are provided (shown as "None"), answer directly from general
+  knowledge. Never ask the user to paste files or file paths — this tool was
+  invoked without any, so treat that as a deliberate choice, not an omission.
+- Only note that the answer could be sharper with repo context (e.g.
+  "re-run with -f/-d to point at the relevant file for specifics") if the
+  question is clearly about this specific codebase rather than general
+  programming knowledge.
 - Do not invent facts.
 - Respond using Markdown
 

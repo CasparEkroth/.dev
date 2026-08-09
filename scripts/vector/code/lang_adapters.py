@@ -23,10 +23,10 @@ class PythonAdapter(LanguageAdapter):
         super().__init__("python")
 
     def is_function(self, node) -> bool:
-        return node.kind() == "function_definition"
+        return self.node_kind(node) == "function_definition"
 
     def is_class(self, node) -> bool:
-        return node.kind() == "class_definition"
+        return self.node_kind(node) == "class_definition"
 
 
 class JavaAdapter(LanguageAdapter):
@@ -34,13 +34,13 @@ class JavaAdapter(LanguageAdapter):
         super().__init__("java")
 
     def is_function(self, node) -> bool:
-        return node.kind() in {
+        return self.node_kind(node) in {
             "method_declaration",
             "constructor_declaration",
         }
 
     def is_class(self, node) -> bool:
-        return node.kind() in {
+        return self.node_kind(node) in {
             "class_declaration",
             "interface_declaration",
             "enum_declaration",
@@ -52,11 +52,11 @@ class JavaScriptAdapter(LanguageAdapter):
         super().__init__("javascript")
 
     def is_function(self, node) -> bool:
-        return node.kind() in {
+        return self.node_kind(node) in {
             "function_declaration",
             "method_definition",
             "arrow_function",
         }
 
     def is_class(self, node) -> bool:
-        return node.kind() == "class_declaration"
+        return self.node_kind(node) == "class_declaration"
