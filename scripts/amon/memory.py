@@ -58,7 +58,7 @@ def load_context_tokens(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> i
 
 def get_list_of_sessions(
     session_dir: Path = SESSIONS_DIR,
-) -> list[tuple(UUID, float)]:
+) -> list[tuple[Path, float]]:
     if not session_dir.exists():
         return []
     return [
@@ -78,7 +78,7 @@ def remove_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> bool:
         return False
 
 
-def clear_sessions(keep_conut: int = 5) -> list[tuple(Path, float)]:
+def clear_sessions(keep_conut: int = 5) -> list[tuple[Path, float]]:
     sessions = get_list_of_sessions()
     sessions.sort(key=lambda x: x[1], reverse=True)
     rm_ses = sessions[keep_conut:]
