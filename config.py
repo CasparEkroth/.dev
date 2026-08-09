@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = ""
     LLM_API_KEY: str = ""
     LLM_MODEL: str = ""
+    # When "azure", LLM_MODEL is the Azure deployment name (not a model id).
+    LLM_PROVIDER: str | None = None
+    AZURE_API_VERSION: str = "2024-10-21"
+    LLM_REASONING_MODEL: bool = False
     HF_TOKEN: str | None = None
     TAVILY_API_KEY: str = ""
 
