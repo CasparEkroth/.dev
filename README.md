@@ -50,9 +50,9 @@ Tool docs and examples are in [`docs/`](docs/index.md):
 | Tool | Docs | Status |
 |------|------|--------|
 | **amon** | [docs/amon/](docs/amon/index.md) | active |
-| **vector-index** | [docs/vector/](docs/vector/) | stub |
-| **search** | — | not started |
-| **git-suggest** | — | not started |
+| **vector-index** | [docs/vector/](docs/vector/index.md) | active |
+| **search** | [docs/search.md](docs/search.md) | active |
+| **git-suggest** | [docs/git-suggest.md](docs/git-suggest.md) | active |
 
 For amon specifically, start with the [overview](docs/amon/index.md), [CLI](docs/amon/cli.md), and [agent config](docs/amon/agent-config.md).
 

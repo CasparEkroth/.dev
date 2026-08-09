@@ -7,9 +7,9 @@ Developer documentation for the tools in this repo.
 | Tool | Docs | Status |
 |------|------|--------|
 | **amon** | [docs/amon/](amon/index.md) | active |
-| **vector-index** | [docs/vector/](vector/) | stub |
-| **search** | — | not started |
-| **git-suggest** | — | not started |
+| **vector-index** | [docs/vector/](vector/index.md) | active |
+| **search** | [docs/search.md](search.md) | active |
+| **git-suggest** | [docs/git-suggest.md](git-suggest.md) | active |
 
 ## Reading amon's docs
 
