@@ -23,8 +23,16 @@ chmod +x setup
 ./setup
 ```
 
-The installer currently creates the commands listed in the `scripts/bin` and places it in
-`~/.local/bin`.
+Install everything, or only specific commands by name:
+
+```bash
+./setup              # install all commands
+./setup amon         # install only amon
+./setup amon search  # install amon and search
+./setup --help       # list available commands
+```
+
+The installer links commands from `scripts/bin` into `~/.local/bin`.
 
 If `~/.local/bin` is not on your `PATH`, the setup script will try to add it to
 `~/.zshrc` and tell you to reload your shell.

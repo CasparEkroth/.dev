@@ -5,25 +5,38 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/.local/bin"
 COMMAND_DIR="$PROJECT_ROOT/scripts/bin"
 
-make install
+usage() {
+    echo "Usage: ./setup [command...]"
+    echo
+    echo "Install all commands, or only the ones you name."
+    echo
+    echo "Available commands:"
+    if [ -d "$COMMAND_DIR" ]; then
+        for command_path in "$COMMAND_DIR"/*; do
+            [ -f "$command_path" ] || continue
+            echo "  $(basename "$command_path")"
+        done
+    fi
+    echo
+    echo "Examples:"
+    echo "  ./setup              # install everything"
+    echo "  ./setup amon         # install only amon"
+    echo "  ./setup amon search  # install amon and search"
+}
 
-if [ ! -d "$COMMAND_DIR" ]; then
-    echo "Error: command directory not found: $COMMAND_DIR"
-    exit 1
-fi
+add-to-path() {
+    local command_path="$1"
 
-mkdir -p "$INSTALL_DIR"
-
-for command_path in "$COMMAND_DIR"/*; do
     if [ ! -f "$command_path" ]; then
-        continue
+        echo "Error: command not found: $command_path"
+        return 1
     fi
 
+    local command_name
     command_name="$(basename "$command_path")"
-    target_path="$INSTALL_DIR/$command_name"
+    local target_path="$INSTALL_DIR/$command_name"
 
     chmod +x "$command_path"
-
     rm -f "$target_path"
 
     cat > "$target_path" <<EOF
@@ -34,9 +47,63 @@ exec "$command_path" "\$@"
 EOF
 
     chmod +x "$target_path"
-
     echo "Installed: $command_name -> $command_path"
-done
+}
+
+resolve-command() {
+    local name="$1"
+
+    if [ -f "$name" ]; then
+        echo "$name"
+        return 0
+    fi
+
+    if [ -f "$COMMAND_DIR/$name" ]; then
+        echo "$COMMAND_DIR/$name"
+        return 0
+    fi
+
+    return 1
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+make install
+
+if [ ! -d "$COMMAND_DIR" ]; then
+    echo "Error: command directory not found: $COMMAND_DIR"
+    exit 1
+fi
+
+mkdir -p "$INSTALL_DIR"
+
+install_amon_config=0
+
+if [ "$#" -gt 0 ]; then
+    for name in "$@"; do
+        if ! command_path="$(resolve-command "$name")"; then
+            echo "Error: unknown command '$name'"
+            echo
+            usage
+            exit 1
+        fi
+
+        add-to-path "$command_path"
+
+        if [ "$(basename "$command_path")" = "amon" ]; then
+            install_amon_config=1
+        fi
+    done
+else
+    for command_path in "$COMMAND_DIR"/*; do
+        [ -f "$command_path" ] || continue
+        add-to-path "$command_path"
+    done
+    install_amon_config=1
+fi
 
 if ! echo ":$PATH:" | grep -q ":$INSTALL_DIR:"; then
     if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zshrc" 2>/dev/null; then
@@ -49,13 +116,13 @@ if ! echo ":$PATH:" | grep -q ":$INSTALL_DIR:"; then
     echo "source ~/.zshrc"
 fi
 
+if [ "$install_amon_config" -eq 1 ]; then
+    echo
+    echo "Creating base agents and skills for Amon"
+    echo
+    chmod +x scripts/amon/config/setup/install
+    ./scripts/amon/config/setup/install
+fi
+
 echo
 echo "Done."
-
-echo
-echo "Crating base agents and skills for Amon"
-echo
-
-chmod +x scripts/amon/config/setup/install
-./scripts/amon/config/setup/install
-
