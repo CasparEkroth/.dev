@@ -2,6 +2,7 @@ import json
 import asyncio
 import logging
 from pathlib import Path
+from config import DEFAULT_MAX_TURNS
 from scripts.amon.agent_loop import AgentResult, run_agent
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing import Any
@@ -16,9 +17,22 @@ class Agent(BaseModel):
     system_prompt: str
     tools: list[str]
     allowed_tools: list[str]
-    max_turns: int = Field(default=10, gt=0)
+    max_turns: int = Field(default=DEFAULT_MAX_TURNS, gt=0)
     allowed_skills: list[str] = Field(default_factory=list)
     hooks: dict[str, str] = Field(default_factory=dict)
+    #: Require a tool call on the first turn. Off by default so an agent can
+    #: open with a clarifying question.
+    force_first_tool: bool = False
+    #: Wall-clock budget for one run, in seconds. None = no limit.
+    max_runtime_s: float | None = None
+    #: Model id for this agent; falls back to the configured default.
+    model: str | None = None
+    #: STUB — accepted and validated, but NOT connected yet. Mirrors the usual
+    #: server config shapes (local: command/args/env/timeout/disabled/
+    #: disabledTools; remote: url/headers/oauth/oauthScopes) so configs written
+    #: now keep working once MCP support lands.
+    #: TODO: spin up the declared servers and register their tools.
+    mcp_servers: dict[str, dict] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -63,6 +77,9 @@ class Agent(BaseModel):
             save_session_=save_session,
             max_turns=self.max_turns,
             hooks=self.hooks,
+            force_first_tool=self.force_first_tool,
+            max_runtime_s=self.max_runtime_s,
+            model=self.model,
         )
 
 

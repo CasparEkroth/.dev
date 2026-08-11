@@ -2,13 +2,58 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 import os
 import json
+import time
 
+from config import DEFAULT_MAX_TURNS, MAX_TOOL_OUTPUT_CHARS, TOOL_OUTPUT_DIR
 from scripts.amon.hooks import HookEventName, run_hook_event
 from scripts.amon.memory import save_context_tokens, save_session, load_session
 from shared.llm_client import call_llm_with_tools
+
+
+def truncate_tool_output(
+    text: str,
+    tool: str = "",
+    session_id: UUID | str | None = None,
+    limit: int = MAX_TOOL_OUTPUT_CHARS,
+    spill_dir: Path = TOOL_OUTPUT_DIR,
+) -> str:
+    """Cap one tool result, spilling the full text to a file the agent can read.
+
+    A single verbose command (a test suite, a recursive listing, a solver log) can
+    otherwise exhaust the context window in one turn. Head and tail are kept —
+    the head carries what ran, the tail the outcome — with a marker naming the
+    spill file so nothing is actually lost.
+
+    Args:
+        text: the tool's full output.
+        tool: tool name, used in the spill filename.
+        session_id: session the output belongs to, used in the spill filename.
+        limit: maximum characters kept inline.
+        spill_dir: directory the full output is written to.
+
+    Returns:
+        *text* unchanged when it fits, else head + marker + tail.
+    """
+    if len(text) <= limit:
+        return text
+
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    spill = (
+        spill_dir
+        / f"{session_id or 'nosession'}_{tool or 'tool'}_{uuid4().hex[:8]}.txt"
+    )
+    spill.write_text(text, encoding="utf-8")
+
+    head_len = limit * 6 // 10
+    tail_len = limit - head_len
+    marker = (
+        f"\n… [truncated {len(text) - limit} of {len(text)} chars — "
+        f"full output: {spill} (read it with read_file)] …\n"
+    )
+    return f"{text[:head_len]}{marker}{text[-tail_len:]}"
 
 
 @dataclass
@@ -72,7 +117,7 @@ def run_agent(
     user_input: str,
     tool_registry: dict,
     skill_catalog: dict,
-    max_turns: int = 30,
+    max_turns: int = DEFAULT_MAX_TURNS,
     confirm_fn=None,
     stream_actions=None,
     token_fn=None,
@@ -80,9 +125,18 @@ def run_agent(
     save_session_: bool = True,
     headless: bool = False,
     hooks: dict[str, str] = {},
+    force_first_tool: bool = False,
+    max_runtime_s: float | None = None,
+    model: str | None = None,
 ) -> AgentResult:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
+
+    force_first_tool: require a tool call on the very first turn. Off by default
+        so an agent can open with a clarifying question instead.
+    max_runtime_s: wall-clock budget. When it expires the run stops between
+        turns and returns its partial result rather than being killed.
+    model: model id for this run; falls back to the configured default.
     """
     from scripts.amon.terminal import confirm_tool, stream_action
 
@@ -141,12 +195,23 @@ def run_agent(
         )
 
     message = {"content": ""}
+    started_at = time.monotonic()
+    stop_error = "Max turns reached without a final answer."
+    turns_taken = max_turns
     for turn in range(max_turns):
+        if max_runtime_s is not None and time.monotonic() - started_at > max_runtime_s:
+            stop_error = (
+                f"Time budget of {max_runtime_s}s exceeded without a final answer."
+            )
+            turns_taken = turn
+            break
+
         response = call_llm_with_tools(
             system_prompt,
             conversation,
             tool_definitions,
-            force_tool=turn == 0 and bool(tool_definitions),
+            force_tool=force_first_tool and turn == 0 and bool(tool_definitions),
+            model=model,
         )
 
         # Extract the message from the full ChatCompletionResponse
@@ -215,10 +280,19 @@ def run_agent(
                 except Exception as e:
                     _persist(last_usage)
                     result = f"Error: {e}"
+            # Cap what enters the conversation; the full text stays on disk.
+            # Both knobs are passed explicitly so they resolve per call.
+            output = truncate_tool_output(
+                str(result),
+                tool=name,
+                session_id=active_session_id,
+                limit=MAX_TOOL_OUTPUT_CHARS,
+                spill_dir=TOOL_OUTPUT_DIR,
+            )
             tool_msg = {
                 "role": "tool",
                 "tool_call_id": call["id"],
-                "content": str(result),
+                "content": output,
             }
 
             if hooks.get(HookEventName.POST_TOOL_USE):
@@ -229,11 +303,11 @@ def run_agent(
                     cwd=os.getcwd(),
                     tool_name=name,
                     tool_input=args,
-                    tool_output=str(result),
+                    tool_output=output,
                 )
 
             if stream_actions:
-                stream_actions("tool_result", {"name": name, "content": str(result)})
+                stream_actions("tool_result", {"name": name, "content": output})
             conversation.append(tool_msg)
             new_messages.append(tool_msg)
 
@@ -256,8 +330,8 @@ def run_agent(
     return _finish(
         ok=False,
         result=last_content or None,
-        error="Max turns reached without a final answer.",
-        turns=max_turns,
+        error=stop_error,
+        turns=turns_taken,
     )
 
 

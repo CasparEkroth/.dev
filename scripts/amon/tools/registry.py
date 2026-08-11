@@ -2,6 +2,7 @@ import asyncio
 import json
 from typing import Literal
 
+from config import DEFAULT_SHELL_TIMEOUT
 from scripts.amon.tools.agent import load_ready_agents
 from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
@@ -26,19 +27,36 @@ tool_registry = {
             "type": "function",
             "function": {
                 "name": "shell",
-                "description": "Execute a shell command and return stdout.",
+                "description": (
+                    "Execute a shell command and return stdout. Pass a string to "
+                    "use shell features (pipes, redirects, &&), or a list to exec "
+                    "argv directly. Raise 'timeout' for long jobs; on expiry the "
+                    "output captured so far is returned."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Command as list, e.g. ['python', '-m', 'unittest', 'discover']",
+                            "anyOf": [
+                                {"type": "array", "items": {"type": "string"}},
+                                {"type": "string"},
+                            ],
+                            "description": "Command as list, e.g. ['python', '-m', 'unittest', 'discover'], or as a shell string, e.g. 'pytest tests/ | tail -5'",
                         },
                         "cwd": {
                             "type": "string",
                             "description": "Optional working directory inside workspace",
                             "default": ".",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": f"Seconds to wait before giving up (default {DEFAULT_SHELL_TIMEOUT}). Increase it for solvers, builds and test suites.",
+                            "default": DEFAULT_SHELL_TIMEOUT,
+                        },
+                        "shell": {
+                            "type": "boolean",
+                            "description": "Run through the shell (implied by a string command). A shell string has no argv boundary, so only use it when shell features are needed.",
+                            "default": False,
                         },
                     },
                     "required": ["command"],
@@ -68,6 +86,11 @@ tool_registry = {
                             "type": "string",
                             "description": "Optional working directory inside workspace",
                             "default": ".",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": f"Seconds to wait before giving up (default {DEFAULT_SHELL_TIMEOUT}).",
+                            "default": DEFAULT_SHELL_TIMEOUT,
                         },
                     },
                     "required": ["command"],
@@ -108,7 +131,13 @@ tool_registry = {
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Write to file",
+                "description": (
+                    "Write to file. An entry whose 'path' does not exist yet is "
+                    "CREATED (with any missing parent directories) when 'old' is "
+                    "empty and 'new' holds the content. For an existing file an "
+                    "empty 'old' appends, otherwise the first occurrence of 'old' "
+                    "is replaced by 'new'."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {

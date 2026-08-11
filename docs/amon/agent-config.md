@@ -32,7 +32,11 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
     "preToolUse": "~/.amon/hooks/log.sh",
     "postToolUse": "~/.amon/hooks/log.sh"
   },
-  "max_turns": 50
+  "max_turns": 50,
+  "force_first_tool": false,
+  "max_runtime_s": 900,
+  "model": null,
+  "mcp_servers": {}
 }
 ```
 
@@ -47,7 +51,11 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
 | `allowed_tools` | yes | Subset that runs **without** confirmation (`requires_confirmation=False`) |
 | `allowed_skills` | no | List of `skill://` URI patterns for the skill catalog |
 | `hooks` | no | Map of hook event name → script path |
-| `max_turns` | no | Max agent loop turns (default `10`, must be `> 0`) |
+| `max_turns` | no | Max agent loop turns (default `DEFAULT_MAX_TURNS` = 30, must be `> 0`) |
+| `force_first_tool` | no | Require a tool call on the first turn (default `false`, so an agent can open with a clarifying question) |
+| `max_runtime_s` | no | Wall-clock budget in seconds (default none). On expiry the run stops between turns and returns its partial result |
+| `model` | no | Model id for this agent (default: `settings.LLM_MODEL`) |
+| `mcp_servers` | no | **Stub** — accepted and validated, but no servers are started and no tools registered yet |
 
 ### `tools` vs `allowed_tools`
 
@@ -64,6 +72,24 @@ Built-in tool names today:
 - `write_file`
 - `load_skill`
 - `spawn_agents` (registered after agents load)
+
+Notable tool behaviour:
+
+- `shell` takes `command` as an argv list **or** a shell string (pipes,
+  redirects, `&&`), plus `timeout` (seconds, default `DEFAULT_SHELL_TIMEOUT`)
+  and `shell`. Raise `timeout` for solvers, builds and test suites; when it
+  expires the output captured so far is returned instead of lost. A shell
+  string has no argv boundary, so prefer a list unless shell features are
+  needed. `shell_readonly` takes `timeout` too, but no shell string — its
+  whitelist is enforced on `command[0]`.
+- `write_file` creates a file (and any missing parent directories) when the
+  `path` does not exist, `old` is empty and `new` holds the content. For an
+  existing file an empty `old` appends; otherwise the first occurrence of
+  `old` is replaced.
+- Every tool result is capped at `MAX_TOOL_OUTPUT_CHARS` before it enters the
+  conversation. Longer output keeps its head and tail, and the full text is
+  written to `TOOL_OUTPUT_DIR` with the path named in the inline marker, so the
+  agent can read it back with `read_file`.
 
 ## Project-local override pattern
 

@@ -259,6 +259,10 @@ def _run_interactive(args) -> None:
                     session_id=session_id,
                     save_session_=True,
                     hooks=agent.hooks,
+                    max_turns=agent.max_turns,
+                    force_first_tool=agent.force_first_tool,
+                    max_runtime_s=agent.max_runtime_s,
+                    model=agent.model,
                 )
             except KeyboardInterrupt:
                 # Hard cancel: in-flight HTTP is aborted; no delayed receive.

@@ -96,6 +96,82 @@ def test_agent_result_to_dict():
     }
 
 
+def test_agent_new_fields_round_trip(tmp_path):
+    config = {
+        "name": "planner",
+        "description": "A planner",
+        "system_prompt": "You plan.",
+        "tools": ["shell"],
+        "allowed_tools": ["shell"],
+        "max_turns": 60,
+        "force_first_tool": True,
+        "max_runtime_s": 900,
+        "model": "claude-opus-5",
+        "mcp_servers": {
+            "git": {"command": "mcp-server-git", "args": ["--stdio"]},
+            "remote": {"url": "https://mcp.example.com/sse"},
+        },
+    }
+    config_file = tmp_path / "planner.json"
+    config_file.write_text(json.dumps(config))
+
+    agent = Agent.from_file(config_file)
+    assert agent.max_turns == 60
+    assert agent.force_first_tool is True
+    assert agent.max_runtime_s == 900
+    assert agent.model == "claude-opus-5"
+    assert agent.mcp_servers["git"]["command"] == "mcp-server-git"
+    assert agent.mcp_servers["remote"]["url"] == "https://mcp.example.com/sse"
+
+
+def test_agent_new_field_defaults(tmp_path):
+    from config import DEFAULT_MAX_TURNS
+
+    config = {
+        "name": "minimal",
+        "description": "minimal",
+        "system_prompt": "hi",
+        "tools": [],
+        "allowed_tools": [],
+    }
+    config_file = tmp_path / "minimal.json"
+    config_file.write_text(json.dumps(config))
+
+    agent = Agent.from_file(config_file)
+    assert agent.max_turns == DEFAULT_MAX_TURNS
+    assert agent.force_first_tool is False
+    assert agent.max_runtime_s is None
+    assert agent.model is None
+    assert agent.mcp_servers == {}
+
+
+def test_run_task_forwards_new_fields():
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=[],
+        allowed_tools=[],
+        max_turns=42,
+        force_first_tool=True,
+        max_runtime_s=123.0,
+        model="pinned-model",
+        mcp_servers={"git": {"command": "mcp-server-git"}},
+    )
+
+    with patch("scripts.amon.tools.agent.run_agent") as run:
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+
+    kwargs = run.call_args.kwargs
+    assert kwargs["max_turns"] == 42
+    assert kwargs["force_first_tool"] is True
+    assert kwargs["max_runtime_s"] == 123.0
+    assert kwargs["model"] == "pinned-model"
+    # mcp_servers is a stub: accepted on the config, not yet wired into a run.
+    assert "mcp_servers" not in kwargs
+
+
 def test_headless_payload_single_and_multi():
     from scripts.amon.amon_cli import _headless_payload
 

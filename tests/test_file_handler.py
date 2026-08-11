@@ -4,7 +4,73 @@ from pathlib import Path
 from shared.file_handler import (
     read_files,
     scan_folder,
+    write_file,
 )
+
+
+class TestWriteFile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_creates_missing_file(self):
+        target = self.root / "new.txt"
+        result = write_file([{"path": str(target), "old": "", "new": "hello"}])
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.read_text(), "hello")
+        self.assertIn("created file", result)
+
+    def test_creates_missing_parent_dirs(self):
+        target = self.root / "a" / "b" / "c.dzn"
+        write_file([{"path": str(target), "old": "", "new": "x = 1;"}])
+        self.assertEqual(target.read_text(), "x = 1;")
+
+    def test_missing_file_without_content_is_not_created(self):
+        target = self.root / "empty.txt"
+        result = write_file([{"path": str(target), "old": "", "new": ""}])
+        self.assertFalse(target.exists())
+        self.assertIn("file not found", result)
+
+    def test_missing_path_key_reports_instead_of_raising(self):
+        result = write_file([{"old": "", "new": "content"}])
+        self.assertIn("missing 'path'", result)
+
+    def test_appends_to_existing_file(self):
+        target = self.root / "log.txt"
+        target.write_text("first\n")
+        result = write_file([{"path": str(target), "old": "", "new": "second\n"}])
+        self.assertEqual(target.read_text(), "first\nsecond\n")
+        self.assertIn("appended content", result)
+
+    def test_replaces_first_occurrence(self):
+        target = self.root / "code.py"
+        target.write_text("a = 1\na = 1\n")
+        result = write_file([{"path": str(target), "old": "a = 1", "new": "a = 2"}])
+        self.assertEqual(target.read_text(), "a = 2\na = 1\n")
+        self.assertIn("updated successfully", result)
+
+    def test_reports_missing_search_text(self):
+        target = self.root / "code.py"
+        target.write_text("a = 1\n")
+        result = write_file([{"path": str(target), "old": "nope", "new": "x"}])
+        self.assertEqual(target.read_text(), "a = 1\n")
+        self.assertIn("search text not found", result)
+
+    def test_batch_reports_one_line_per_section(self):
+        created = self.root / "one.txt"
+        missing = self.root / "two.txt"
+        result = write_file(
+            [
+                {"path": str(created), "old": "", "new": "data"},
+                {"path": str(missing), "old": "x", "new": "y"},
+            ]
+        )
+        self.assertEqual(len(result.splitlines()), 2)
+        self.assertIn("created file", result)
+        self.assertIn("file not found", result)
 
 
 class TestScanFolder(unittest.TestCase):

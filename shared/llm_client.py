@@ -327,6 +327,7 @@ def call_llm_with_tools(
     conversation_history: list,
     tool_definitions: list | dict | None,
     force_tool: bool = False,
+    model: str | None = None,
 ) -> dict:
     """Chat completion with optional tool definitions.
 
@@ -334,6 +335,9 @@ def call_llm_with_tools(
     stay decoupled from the SDK response type. For xAI only, XML ``<tool_call>``
     blocks embedded in ``message.content`` are normalised into structured
     ``tool_calls``.
+
+    *model* overrides the configured default for this call, so agents can pin
+    their own model; it falls back to ``settings.LLM_MODEL`` when unset.
     """
     provider = resolve_provider()
     client = get_llm_client()
@@ -341,7 +345,7 @@ def call_llm_with_tools(
 
     # settings.LLM_MODEL is the Azure deployment name when LLM_PROVIDER == "azure".
     kwargs: dict[str, Any] = {
-        "model": settings.LLM_MODEL,
+        "model": model or settings.LLM_MODEL,
         "messages": messages,
     }
     if tool_definitions:

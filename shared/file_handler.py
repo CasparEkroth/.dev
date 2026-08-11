@@ -63,13 +63,35 @@ def read_file(path: str, start_line: int = None, end_line: int = None) -> dict:
 
 
 def write_file(content: list[dict]) -> str:
+    """Apply a batch of edits, creating files that do not exist yet.
+
+    Each section is ``{"path": ..., "old": ..., "new": ...}``:
+
+    * missing file + empty ``old`` + non-empty ``new`` -> the file (and any
+      missing parent directories) is CREATED with ``new`` as its content;
+    * existing file + empty ``old`` -> ``new`` is appended;
+    * existing file + non-empty ``old`` -> the first occurrence is replaced.
+
+    Returns one status line per section, so a partial batch still reports which
+    sections applied.
+    """
     results = []
     for section in content:
-        path = Path(section.get("path"))
+        raw_path = section.get("path") or ""
         old = section.get("old", "")
         new = section.get("new", "")
+        if not raw_path:
+            results.append("<no path>: missing 'path', no changes made")
+            continue
+        path = Path(raw_path)
         # handel old is eampty####
         if not path.is_file():
+            # No file yet: an empty `old` with content to write means "create it".
+            if old == "" and new != "":
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(new)
+                results.append(f"{path}: created file")
+                continue
             results.append(f"{path}: file not found")
             continue
 

@@ -50,3 +50,18 @@ REPO_DIR = Path(__file__).parent.resolve()
 BASE_CONFIG_DIR = REPO_DIR / "scripts/amon/config"
 
 SESSIONS_DIR = BASE_CONFIG_DIR / "sessions"
+
+#: Default wall-clock bound for one ``shell`` tool call, in seconds. Individual
+#: calls may raise it (analysis and solver commands routinely need minutes).
+DEFAULT_SHELL_TIMEOUT: int = 30
+
+#: Default ceiling on the number of turns in a single agent run.
+DEFAULT_MAX_TURNS: int = 30
+
+#: Maximum characters of a single tool result that enter the conversation.
+#: Anything longer is truncated and spilled in full to TOOL_OUTPUT_DIR, so one
+#: verbose command cannot exhaust the context window.
+MAX_TOOL_OUTPUT_CHARS: int = 20_000
+
+#: Where truncated tool output is spilled in full for the agent to read back.
+TOOL_OUTPUT_DIR = BASE_CONFIG_DIR / "tool_output"
