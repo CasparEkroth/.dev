@@ -20,18 +20,14 @@ class Agent(BaseModel):
     max_turns: int = Field(default=DEFAULT_MAX_TURNS, gt=0)
     allowed_skills: list[str] = Field(default_factory=list)
     hooks: dict[str, str] = Field(default_factory=dict)
-    #: Require a tool call on the first turn. Off by default so an agent can
-    #: open with a clarifying question.
+    #: Require a tool call on turn 0. Off so an agent can open with a question.
     force_first_tool: bool = False
-    #: Wall-clock budget for one run, in seconds. None = no limit.
+    #: Wall-clock budget for one run, in seconds.
     max_runtime_s: float | None = None
-    #: Model id for this agent; falls back to the configured default.
     model: str | None = None
-    #: STUB — accepted and validated, but NOT connected yet. Mirrors the usual
-    #: server config shapes (local: command/args/env/timeout/disabled/
-    #: disabledTools; remote: url/headers/oauth/oauthScopes) so configs written
-    #: now keep working once MCP support lands.
-    #: TODO: spin up the declared servers and register their tools.
+    #: See DEFAULT_SYSTEM_PROMPT_TEMPLATE.
+    system_prompt_template: str | None = None
+    #: TODO: accepted and validated, but no server is started yet.
     mcp_servers: dict[str, dict] = Field(default_factory=dict)
 
     @model_validator(mode="before")
@@ -80,6 +76,7 @@ class Agent(BaseModel):
             force_first_tool=self.force_first_tool,
             max_runtime_s=self.max_runtime_s,
             model=self.model,
+            system_prompt_template=self.system_prompt_template,
         )
 
 

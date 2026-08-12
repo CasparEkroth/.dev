@@ -55,6 +55,7 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
 | `force_first_tool` | no | Require a tool call on the first turn (default `false`, so an agent can open with a clarifying question) |
 | `max_runtime_s` | no | Wall-clock budget in seconds (default none). On expiry the run stops between turns and returns its partial result |
 | `model` | no | Model id for this agent (default: `settings.LLM_MODEL`) |
+| `system_prompt_template` | no | Overrides how the system prompt is assembled. Placeholders: `{prompt}` (this agent's `system_prompt`), `{workspace}` (cwd), `{skills}` (the catalog). Unused placeholders are fine; literal braces must be doubled, and an unknown placeholder raises at run start. Supply a template without the `load_skill` sentence to drop the skill mandate — e.g. when the agent's first tool call must be something else |
 | `mcp_servers` | no | **Stub** — accepted and validated, but no servers are started and no tools registered yet |
 
 ### `tools` vs `allowed_tools`
@@ -90,6 +91,12 @@ Notable tool behaviour:
   conversation. Longer output keeps its head and tail, and the full text is
   written to `TOOL_OUTPUT_DIR` with the path named in the inline marker, so the
   agent can read it back with `read_file`.
+- A run compacts its own history when the prompt crosses `COMPACT_AT_TOKENS`
+  (75% of `BASE_CONTEXT_WINDOW`): everything before the last tool-calling turn
+  is summarized by the same code path as `/compact`, so a long run keeps going
+  instead of being rejected for exceeding the context window. The session file
+  on disk stays complete. If a model call fails anyway, the run returns its
+  partial result and error rather than losing everything.
 
 ## Project-local override pattern
 

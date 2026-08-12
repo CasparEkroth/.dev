@@ -27,6 +27,7 @@ Map key = filename stem. Higher priority overwrites lower on conflict.
 | `force_first_tool` | bool | no | `false` | Require a tool call on turn 0; off means the agent may open with a question |
 | `max_runtime_s` | float | no | `null` | Wall-clock budget; the run stops between turns and keeps its partial result |
 | `model` | string | no | `null` | Model id for this agent; falls back to `settings.LLM_MODEL` |
+| `system_prompt_template` | string | no | `null` | Overrides prompt assembly; placeholders `{prompt}`, `{workspace}`, `{skills}`. Double literal braces; unknown placeholders raise at run start |
 | `mcp_servers` | object | no | `{}` | **STUB** — validated and ignored until MCP support lands |
 
 ## `mcp_servers` (stub)

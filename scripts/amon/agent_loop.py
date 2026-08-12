@@ -7,10 +7,38 @@ import os
 import json
 import time
 
-from config import DEFAULT_MAX_TURNS, MAX_TOOL_OUTPUT_CHARS, TOOL_OUTPUT_DIR
+from config import (
+    COMPACT_AT_TOKENS,
+    DEFAULT_MAX_TURNS,
+    MAX_TOOL_OUTPUT_CHARS,
+    TOOL_OUTPUT_DIR,
+)
 from scripts.amon.hooks import HookEventName, run_hook_event
 from scripts.amon.memory import save_context_tokens, save_session, load_session
-from shared.llm_client import call_llm_with_tools
+from shared.llm_client import call_llm, call_llm_with_tools, parse_llm_json
+
+
+def compact_conversation(conversation: list[dict]) -> list[dict] | None:
+    """Summarize *conversation* into a smaller message list, or None on failure.
+
+    Sanitized to plain role/content: a summarized ``tool_calls`` turn would
+    reference tool replies that no longer exist, which the provider rejects.
+    """
+    if not conversation:
+        return None
+    parsed = parse_llm_json(
+        call_llm(
+            f"summarize this conversation {conversation} return the summary as a "
+            f"json in the same structure as the original but significant smaller."
+        )
+    )
+    if not isinstance(parsed, list):
+        return None
+    return [
+        {"role": m["role"], "content": str(m.get("content") or "")}
+        for m in parsed
+        if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
+    ] or None
 
 
 def truncate_tool_output(
@@ -20,22 +48,10 @@ def truncate_tool_output(
     limit: int = MAX_TOOL_OUTPUT_CHARS,
     spill_dir: Path = TOOL_OUTPUT_DIR,
 ) -> str:
-    """Cap one tool result, spilling the full text to a file the agent can read.
+    """Cap one tool result at *limit*, keeping its head and tail.
 
-    A single verbose command (a test suite, a recursive listing, a solver log) can
-    otherwise exhaust the context window in one turn. Head and tail are kept —
-    the head carries what ran, the tail the outcome — with a marker naming the
-    spill file so nothing is actually lost.
-
-    Args:
-        text: the tool's full output.
-        tool: tool name, used in the spill filename.
-        session_id: session the output belongs to, used in the spill filename.
-        limit: maximum characters kept inline.
-        spill_dir: directory the full output is written to.
-
-    Returns:
-        *text* unchanged when it fits, else head + marker + tail.
+    The full text is written to *spill_dir* and the marker names that file, so
+    one verbose command cannot exhaust the context window and nothing is lost.
     """
     if len(text) <= limit:
         return text
@@ -128,15 +144,20 @@ def run_agent(
     force_first_tool: bool = False,
     max_runtime_s: float | None = None,
     model: str | None = None,
+    compact_at_tokens: int = COMPACT_AT_TOKENS,
+    system_prompt_template: str | None = None,
 ) -> AgentResult:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
 
-    force_first_tool: require a tool call on the very first turn. Off by default
-        so an agent can open with a clarifying question instead.
-    max_runtime_s: wall-clock budget. When it expires the run stops between
-        turns and returns its partial result rather than being killed.
+    force_first_tool: require a tool call on turn 0. Off by default so an agent
+        can open with a question.
+    max_runtime_s: wall-clock budget; the run stops between turns and keeps its
+        partial result.
     model: model id for this run; falls back to the configured default.
+    compact_at_tokens: prompt size at which the history is summarized. Pass a
+        large value to disable.
+    system_prompt_template: overrides prompt assembly.
     """
     from scripts.amon.terminal import confirm_tool, stream_action
 
@@ -145,7 +166,9 @@ def run_agent(
     stream_actions = stream_actions or stream_action if not headless else None
     token_fn = token_fn if not headless else None
 
-    system_prompt = build_system_prompt(system_prompt, skill_catalog)
+    system_prompt = build_system_prompt(
+        system_prompt, skill_catalog, system_prompt_template
+    )
     history = load_session(session_id) if session_id else []
     conversation = history + [{"role": "user", "content": user_input}]
     new_messages = [{"role": "user", "content": user_input}]
@@ -206,13 +229,19 @@ def run_agent(
             turns_taken = turn
             break
 
-        response = call_llm_with_tools(
-            system_prompt,
-            conversation,
-            tool_definitions,
-            force_tool=force_first_tool and turn == 0 and bool(tool_definitions),
-            model=model,
-        )
+        try:
+            response = call_llm_with_tools(
+                system_prompt,
+                conversation,
+                tool_definitions,
+                force_tool=force_first_tool and turn == 0 and bool(tool_definitions),
+                model=model,
+            )
+        # Degrade instead of losing the run: the stop hook and _persist still run.
+        except Exception as exc:  # noqa: BLE001
+            stop_error = f"Model call failed: {exc}"
+            turns_taken = turn + 1
+            break
 
         # Extract the message from the full ChatCompletionResponse
         choice = response["choices"][0]
@@ -280,8 +309,7 @@ def run_agent(
                 except Exception as e:
                     _persist(last_usage)
                     result = f"Error: {e}"
-            # Cap what enters the conversation; the full text stays on disk.
-            # Both knobs are passed explicitly so they resolve per call.
+            # Passed explicitly so both knobs resolve per call.
             output = truncate_tool_output(
                 str(result),
                 tool=name,
@@ -317,6 +345,21 @@ def run_agent(
                 context=last_usage["prompt_tokens"],
             )
 
+        if last_usage["prompt_tokens"] > compact_at_tokens:
+            # Cut before the last tool_calls turn so surviving tool replies keep
+            # the message they refer to. new_messages, and the session, are whole.
+            cut = next(
+                (
+                    i
+                    for i in range(len(conversation) - 1, -1, -1)
+                    if conversation[i].get("tool_calls")
+                ),
+                len(conversation),
+            )
+            summary = compact_conversation(conversation[:cut])
+            if summary:
+                conversation[:cut] = summary
+
     _persist(last_usage)
 
     if hooks.get(HookEventName.STOP):
@@ -341,19 +384,35 @@ def _cli_confirm(tool_name: str, args: dict) -> bool:
     return answer == "y"
 
 
-def build_system_prompt(base_prompt: str, skill_catalog: list[dict]) -> str:
+#: Placeholders: {prompt}, {workspace}, {skills}. An agent can replace this via
+#: `system_prompt_template` — e.g. to drop the load_skill mandate. Literal braces
+#: in a custom template must be doubled.
+DEFAULT_SYSTEM_PROMPT_TEMPLATE = """{prompt}
+
+## Workspace
+The project working directory is: {workspace}
+Skills live under ~/.amon/skills and are shared across projects — their paths are \
+absolute and unrelated to the workspace. When running `shell`/`shell_readonly` \
+commands (e.g. invoking a skill's script), always pass `cwd={workspace}` \
+(or a path inside it) unless the user asks you to operate elsewhere. Never infer \
+cwd from a skill's path.
+
+## Available Skills
+{skills}
+
+When the user's request matches one of the above skills, your FIRST tool call \
+MUST be `load_skill(skill_path=<path>)` using the skill_path shown. Do not run \
+any shell commands or read any files before loading the skill."""
+
+
+def build_system_prompt(
+    base_prompt: str, skill_catalog: list[dict], template: str | None = None
+) -> str:
+    """Assemble the system prompt from *template* (or the default one)."""
     skills_section = "\n".join(
         f"- {s['name']} (skill_path: {s['path']}): {s['description']}"
         for s in skill_catalog
     )
-    workspace_root = Path.cwd()
-    return (
-        base_prompt
-        + f"\n\n## Workspace\nThe project working directory is: {workspace_root}\n"
-        f"Skills live under ~/.amon/skills and are shared across projects — their paths are "
-        f"absolute and unrelated to the workspace. When running `shell`/`shell_readonly` "
-        f"commands (e.g. invoking a skill's script), always pass `cwd={workspace_root}` "
-        f"(or a path inside it) unless the user asks you to operate elsewhere. Never infer "
-        f"cwd from a skill's path."
-        + f"\n\n## Available Skills\n{skills_section}\n\nWhen the user's request matches one of the above skills, your FIRST tool call MUST be `load_skill(skill_path=<path>)` using the skill_path shown. Do not run any shell commands or read any files before loading the skill."
+    return (template or DEFAULT_SYSTEM_PROMPT_TEMPLATE).format(
+        prompt=base_prompt, workspace=Path.cwd(), skills=skills_section
     )

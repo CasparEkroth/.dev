@@ -172,6 +172,38 @@ def test_run_task_forwards_new_fields():
     assert "mcp_servers" not in kwargs
 
 
+def test_get_registry_does_not_leak_permissions_between_agents():
+    from scripts.amon.tools.registry import get_registry, tool_registry
+
+    permissive = get_registry(tools=["shell"], allowed_tools=["shell"])
+    restrictive = get_registry(tools=["shell"], allowed_tools=[])
+
+    assert permissive["shell"]["requires_confirmation"] is False
+    # The restrictive agent must still confirm, even though a permissive one ran.
+    assert restrictive["shell"]["requires_confirmation"] is True
+    # And the shared global is untouched by either call.
+    assert tool_registry["shell"]["requires_confirmation"] is True
+
+
+def test_get_registry_shares_schema_and_fn():
+    from scripts.amon.tools.registry import get_registry, tool_registry
+
+    entry = get_registry(tools=["shell"], allowed_tools=["shell"])["shell"]
+    assert entry["fn"] is tool_registry["shell"]["fn"]
+    assert entry["schema"] is tool_registry["shell"]["schema"]
+
+
+def test_get_registry_selection_rules():
+    from scripts.amon.tools.registry import get_registry
+
+    assert get_registry() == {}
+    assert get_registry(tools=["not_a_tool"]) == {}
+    # No allowed_tools means everything needs confirmation.
+    every = get_registry(tools=["shell", "read_file"])
+    assert set(every) == {"shell", "read_file"}
+    assert all(v["requires_confirmation"] for v in every.values())
+
+
 def test_headless_payload_single_and_multi():
     from scripts.amon.amon_cli import _headless_payload
 

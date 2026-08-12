@@ -15,7 +15,7 @@ READONLY_GIT_SUBCOMMANDS = {"status", "log", "diff", "show", "branch"}
 
 
 def _as_text(stream: str | bytes | None) -> str:
-    """Decode a subprocess stream that may be bytes when a timeout interrupts it."""
+    """Decode a subprocess stream, which may be bytes after a timeout."""
     if stream is None:
         return ""
     if isinstance(stream, bytes):
@@ -28,9 +28,8 @@ def shell_readonly(
 ) -> str:
     """Run a whitelisted read-only command.
 
-    Only accepts a command LIST: the whitelist is enforced on ``command[0]``, and
-    a shell string would let anything past it (``"ls; rm -rf ."`` starts with
-    ``"l"``, which is simply rejected).
+    Takes a list only: the whitelist is enforced on ``command[0]``, which a
+    shell string would bypass.
     """
     if not command:
         raise ValueError("Empty command")
@@ -64,19 +63,10 @@ def run_shell(
     timeout: int = DEFAULT_SHELL_TIMEOUT,
     shell: bool = False,
 ) -> str:
-    """Execute a command and return its output.
+    """Run *command* (argv list, or shell string for pipes and redirects).
 
-    Args:
-        command: argv list, or a shell string (pipes, redirects, ``&&``).
-        cwd: working directory.
-        timeout: seconds to wait. Raise it for long jobs (solvers, builds,
-            test suites); on expiry the output captured so far is RETURNED
-            rather than lost, so a partial run is still readable.
-        shell: run through the shell. Implied by a string *command*; set it to
-            join an argv list into one shell command line.
-
-    Security: a shell string has no argv boundary, so anything interpolated into
-    it is executed. Prefer a list unless shell features are actually needed.
+    On timeout the output captured so far is returned instead of raising. A
+    shell string has no argv boundary, so prefer a list.
     """
     shell = shell or isinstance(command, str)
     if shell and isinstance(command, list):

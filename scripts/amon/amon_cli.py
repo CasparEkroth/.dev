@@ -11,7 +11,7 @@ from scripts.amon.tools.registry import (
     get_registry,
     READY_AGENTS,
 )
-from scripts.amon.agent_loop import run_agent
+from scripts.amon.agent_loop import compact_conversation, run_agent
 from scripts.amon import terminal
 from scripts.amon.memory import (
     clear_sessions,
@@ -21,7 +21,7 @@ from scripts.amon.memory import (
     remove_session,
     save_session,
 )
-from shared.llm_client import call_llm, get_context_window, parse_llm_json
+from shared.llm_client import get_context_window
 
 from scripts.amon.tools.skills import catalog_for_agent
 
@@ -220,10 +220,7 @@ def _run_interactive(args) -> None:
                 terminal.console.print("[dim]Session is empty.[/dim]")
                 continue
             with terminal.spinner_context():
-                response = call_llm(
-                    f"summarize this conversation {conversation} return the summary as a json in the same structure as the original but significant smaller."
-                )
-            new_conversation = parse_llm_json(response)
+                new_conversation = compact_conversation(conversation)
             if new_conversation is None:
                 terminal.console.print(
                     "[red]Compact failed: model did not return valid JSON.[/red]"
@@ -263,6 +260,7 @@ def _run_interactive(args) -> None:
                     force_first_tool=agent.force_first_tool,
                     max_runtime_s=agent.max_runtime_s,
                     model=agent.model,
+                    system_prompt_template=agent.system_prompt_template,
                 )
             except KeyboardInterrupt:
                 # Hard cancel: in-flight HTTP is aborted; no delayed receive.

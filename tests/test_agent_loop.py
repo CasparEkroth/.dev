@@ -1,13 +1,23 @@
 """Tests for the agent loop: output truncation, first-turn forcing, budgets."""
 
+from pathlib import Path
 from unittest.mock import patch
 
-from scripts.amon.agent_loop import run_agent, truncate_tool_output
+import pytest
+
+from scripts.amon.agent_loop import (
+    build_system_prompt,
+    compact_conversation,
+    run_agent,
+    truncate_tool_output,
+)
+
+SKILL_CATALOG = [{"name": "s1", "path": "/skills/s1", "description": "does things"}]
 
 
 def _response(content=None, tool_calls=None, prompt_tokens=10, completion_tokens=5):
     """One fake chat-completion response in the shape run_agent consumes."""
-    message = {"content": content}
+    message = {"role": "assistant", "content": content}
     if tool_calls:
         message["tool_calls"] = tool_calls
     return {
@@ -221,7 +231,208 @@ class TestBudgets:
         assert default == DEFAULT_MAX_TURNS
 
 
-# --------------------------------------------------------------------- model
+# --------------------------------------------------------------- compaction
+
+
+class TestCompactConversation:
+    def _patch(self, monkeypatch, raw):
+        monkeypatch.setattr(
+            "scripts.amon.agent_loop.call_llm", lambda prompt: self._seen(prompt)
+        )
+        monkeypatch.setattr("scripts.amon.agent_loop.parse_llm_json", lambda _: raw)
+
+    def _seen(self, prompt):
+        self.prompt = prompt
+        return "irrelevant, parse_llm_json is patched"
+
+    def test_returns_plain_messages(self, monkeypatch):
+        self._patch(monkeypatch, [{"role": "user", "content": "shorter"}])
+        assert compact_conversation([{"role": "user", "content": "long"}]) == [
+            {"role": "user", "content": "shorter"}
+        ]
+
+    def test_strips_tool_calls_and_tool_messages(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            [
+                {
+                    "role": "assistant",
+                    "content": "did stuff",
+                    "tool_calls": [{"id": "1"}],
+                },
+                {"role": "tool", "tool_call_id": "1", "content": "result"},
+                {"role": "user", "content": "next"},
+            ],
+        )
+        out = compact_conversation([{"role": "user", "content": "long"}])
+        # A summarized tool_calls turn would dangle: its tool replies are gone.
+        assert out == [
+            {"role": "assistant", "content": "did stuff"},
+            {"role": "user", "content": "next"},
+        ]
+
+    def test_unusable_json_returns_none(self, monkeypatch):
+        self._patch(monkeypatch, None)
+        assert compact_conversation([{"role": "user", "content": "x"}]) is None
+
+    def test_non_list_returns_none(self, monkeypatch):
+        self._patch(monkeypatch, {"role": "user", "content": "x"})
+        assert compact_conversation([{"role": "user", "content": "x"}]) is None
+
+    def test_summary_without_usable_roles_returns_none(self, monkeypatch):
+        self._patch(monkeypatch, [{"role": "tool", "content": "only tools"}])
+        assert compact_conversation([{"role": "user", "content": "x"}]) is None
+
+    def test_empty_conversation_returns_none(self):
+        assert compact_conversation([]) is None
+
+    def test_prompt_carries_the_conversation(self, monkeypatch):
+        self._patch(monkeypatch, [{"role": "user", "content": "s"}])
+        compact_conversation([{"role": "user", "content": "MARKER"}])
+        assert "MARKER" in self.prompt
+
+
+class TestAutoCompaction:
+    def test_not_compacted_below_the_threshold(self):
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+                compact_at_tokens=1_000_000,
+            )
+        compact.assert_not_called()
+
+    def test_compacted_above_the_threshold(self):
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            _, llm = _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+                compact_at_tokens=1,
+            )
+        compact.assert_called()
+        second_turn = llm.call_args_list[1].args[1]
+        assert second_turn[0] == {"role": "user", "content": "summary"}
+
+    def test_tool_replies_keep_their_parent(self):
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            _, llm = _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+                compact_at_tokens=1,
+            )
+        second_turn = llm.call_args_list[1].args[1]
+        for index, message in enumerate(second_turn):
+            if message.get("role") == "tool":
+                parents = [
+                    m
+                    for m in second_turn[:index]
+                    if m.get("role") == "assistant" and m.get("tool_calls")
+                ]
+                assert parents, "tool message lost the assistant turn it belongs to"
+
+    def test_compacts_only_the_head(self):
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+                compact_at_tokens=1,
+            )
+        # The head handed to the summarizer stops before the tool-call turn.
+        head = compact.call_args.args[0]
+        assert all(not m.get("tool_calls") for m in head)
+
+    def test_failed_summary_leaves_the_conversation_intact(self):
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = None
+            _, llm = _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+                compact_at_tokens=1,
+            )
+        second_turn = llm.call_args_list[1].args[1]
+        assert second_turn[0] == {"role": "user", "content": "task"}
+
+
+# ----------------------------------------------------------- failed llm call
+
+
+class TestModelCallFailure:
+    def test_partial_result_is_returned(self):
+        responses = [
+            _response(content="partial work", tool_calls=_tool_call()),
+            RuntimeError("context length exceeded"),
+        ]
+        result, _ = _run(responses, registry=_registry(lambda **kw: "ok"))
+        assert not result.ok
+        assert "context length exceeded" in result.error
+        assert result.result == "partial work"
+        assert result.turns == 2
+
+    def test_failure_on_the_first_turn_does_not_propagate(self):
+        result, _ = _run([RuntimeError("boom")], registry=_registry(len))
+        assert not result.ok
+        assert result.result is None
+        assert "boom" in result.error
+
+    def test_stop_hook_fires_and_session_persists(self):
+        with (
+            patch("scripts.amon.agent_loop.run_hook_event") as hook,
+            patch("scripts.amon.agent_loop.save_session") as save,
+        ):
+            save.return_value = None
+            with patch("scripts.amon.agent_loop.call_llm_with_tools") as llm:
+                llm.side_effect = [RuntimeError("boom")]
+                run_agent(
+                    system_prompt="sys",
+                    user_input="task",
+                    tool_registry={},
+                    skill_catalog=[],
+                    save_session_=True,
+                    headless=True,
+                    hooks={"stop": "/tmp/does-not-matter.sh"},
+                )
+        save.assert_called()
+        events = [c.kwargs["hook_event_name"] for c in hook.call_args_list]
+        assert "stop" in [getattr(e, "value", e) for e in events]
+
+
+# ------------------------------------------------------------ prompt template
+
+
+class TestSystemPromptTemplate:
+    CATALOG = SKILL_CATALOG
+
+    def test_default_template_keeps_workspace_skills_and_mandate(self):
+        out = build_system_prompt("BASE", self.CATALOG)
+        assert "BASE" in out
+        assert str(Path.cwd()) in out
+        assert "s1" in out and "does things" in out
+        assert "load_skill" in out
+
+    def test_custom_template_can_drop_the_mandate(self):
+        out = build_system_prompt("BASE", self.CATALOG, "{prompt}\n\nSkills:\n{skills}")
+        assert "load_skill" not in out
+        assert "BASE" in out
+        assert "s1" in out
+
+    def test_custom_template_may_ignore_placeholders(self):
+        assert build_system_prompt("BASE", self.CATALOG, "fixed prompt") == (
+            "fixed prompt"
+        )
+
+    def test_unknown_placeholder_raises_at_assembly(self):
+        with pytest.raises(KeyError):
+            build_system_prompt("BASE", self.CATALOG, "{nope}")
+
+    def test_run_agent_uses_the_template(self):
+        _, llm = _run(
+            [_response(content="hi")],
+            system_prompt_template="ONLY: {prompt}",
+        )
+        assert llm.call_args_list[0].args[0] == "ONLY: sys"
 
 
 class TestModelOverride:

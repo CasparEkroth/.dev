@@ -132,11 +132,9 @@ tool_registry = {
             "function": {
                 "name": "write_file",
                 "description": (
-                    "Write to file. An entry whose 'path' does not exist yet is "
-                    "CREATED (with any missing parent directories) when 'old' is "
-                    "empty and 'new' holds the content. For an existing file an "
-                    "empty 'old' appends, otherwise the first occurrence of 'old' "
-                    "is replaced by 'new'."
+                    "Write to file. An empty 'old' appends, or creates the file "
+                    "(with parent directories) when 'path' does not exist; "
+                    "otherwise the first occurrence of 'old' becomes 'new'."
                 ),
                 "parameters": {
                     "type": "object",
@@ -258,16 +256,17 @@ TOOLS_LIST = Literal.__getitem__(
 def get_registry(
     tools: list[str] | None = None, allowed_tools: list[str] | None = None
 ) -> dict:
+    """Select this agent's tools, with its own confirmation policy.
+
+    Each entry is a copy: writing the flag back onto the shared ``tool_registry``
+    made it process-wide, so one permissive agent disabled confirmation for all.
+    """
     if tools is None:
         return {}
 
-    register = {k: v for k, v in tool_registry.items() if k in tools}
-
-    if allowed_tools is None:
-        return register
-
-    for k, v in register.items():
-        if k in allowed_tools:
-            v["requires_confirmation"] = False
-
-    return register
+    allowed = allowed_tools or []
+    return {
+        k: {**v, "requires_confirmation": k not in allowed}
+        for k, v in tool_registry.items()
+        if k in tools
+    }

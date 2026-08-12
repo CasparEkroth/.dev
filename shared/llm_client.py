@@ -336,8 +336,8 @@ def call_llm_with_tools(
     blocks embedded in ``message.content`` are normalised into structured
     ``tool_calls``.
 
-    *model* overrides the configured default for this call, so agents can pin
-    their own model; it falls back to ``settings.LLM_MODEL`` when unset.
+    *model* overrides the configured default, falling back to
+    ``settings.LLM_MODEL`` when unset.
     """
     provider = resolve_provider()
     client = get_llm_client()

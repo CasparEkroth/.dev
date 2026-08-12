@@ -57,8 +57,7 @@ class TestShellReadonly:
             shell_readonly(["rm", "-rf", "/"])
 
     def test_rejects_a_shell_string(self):
-        # "ls -la"[0] == "l", which is not on the whitelist, so a string command
-        # can never smuggle shell syntax past the argv[0] check.
+        # "ls -la"[0] == "l", so shell syntax cannot slip past the argv[0] check.
         with pytest.raises(ValueError, match="not allowed"):
             shell_readonly("ls -la | rm -rf /")
 
