@@ -22,7 +22,7 @@ Map key = filename stem. Higher priority overwrites lower on conflict.
 | `tools` | string[] \| `"*"` | yes | — | Tool registry keys; `*` expands |
 | `allowed_tools` | string[] \| `"*"` | yes | — | Confirmation bypass list; `*` expands |
 | `allowed_skills` | string[] | no | `[]` | `skill://` URI patterns |
-| `hooks` | object | no | `{}` | keys → script path strings |
+| `hooks` | object | no | `{}` | event → list of `{command, matcher?, timeout_ms?}`; a string or list of strings is normalized |
 | `max_turns` | int | no | `DEFAULT_MAX_TURNS` (30) | must be `> 0` |
 | `force_first_tool` | bool | no | `false` | Require a tool call on turn 0; off means the agent may open with a question |
 | `max_runtime_s` | float | no | `null` | Wall-clock budget; the run stops between turns and keeps its partial result |
@@ -41,6 +41,7 @@ disabledTools}`, remote `{url, headers, oauth, oauthScopes}`.
 
 Exact strings (see hook events reference):
 
+- `agentSpawn`
 - `start`
 - `stop`
 - `preToolUse`

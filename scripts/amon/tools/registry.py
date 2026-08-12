@@ -2,7 +2,7 @@ import asyncio
 import json
 from typing import Literal
 
-from config import DEFAULT_SHELL_TIMEOUT
+from config import DEFAULT_MAX_PARALLEL, DEFAULT_SHELL_TIMEOUT
 from scripts.amon.tools.agent import load_ready_agents
 from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
@@ -202,9 +202,10 @@ tool_registry["spawn_agents"] = {
         "function": {
             "name": "spawn_agents",
             "description": (
-                "Spawn one or more agents to run tasks concurrently. Blocks until all "
-                "agents finish. Returns a JSON string: a list of result objects with keys "
-                "ok, agent, task, result, error, usage, turns, tools_used, session_id. "
+                "Spawn one or more agents to run tasks concurrently as child "
+                "processes. Blocks until all agents finish. Returns a JSON string: "
+                "a list of result objects with keys ok, agent, task, result, error, "
+                "usage, turns, tools_used, session_id. "
                 "Check ok on each item — result may be partial when ok is false "
                 "(e.g. max turns). Sessions are not saved unless save_session=true."
             ),
@@ -238,6 +239,15 @@ tool_registry["spawn_agents"] = {
                             "required": ["agent", "task"],
                         },
                         "description": "List of jobs to run in parallel",
+                    },
+                    "max_parallel": {
+                        "type": "integer",
+                        "description": f"Concurrent child processes (default {DEFAULT_MAX_PARALLEL}).",
+                        "default": DEFAULT_MAX_PARALLEL,
+                    },
+                    "timeout_s": {
+                        "type": "number",
+                        "description": "Per-job wall-clock limit; the child is killed on expiry. Omit for no limit.",
                     },
                 },
                 "required": ["jobs"],

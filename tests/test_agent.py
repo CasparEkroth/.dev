@@ -6,7 +6,7 @@ from scripts.amon.agent_loop import AgentResult
 from scripts.amon.tools.agent import (
     Agent,
     load_ready_agents,
-    spawn_agents,
+    run_jobs,
 )
 
 
@@ -219,7 +219,7 @@ def test_headless_payload_single_and_multi():
     assert payload["results"] == multi
 
 
-def test_spawn_agents():
+def test_run_jobs():
     from scripts.amon.tools.registry import READY_AGENTS
 
     seen = {}
@@ -240,7 +240,7 @@ def test_spawn_agents():
     mock_agent.run_task = async_run_task
     with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
         jobs = [{"agent": "test", "task": "do something"}]
-        results = asyncio.run(spawn_agents(jobs))
+        results = asyncio.run(run_jobs(jobs))
         assert isinstance(results, list)
         assert len(results) == 1
         assert results[0]["ok"] is True
@@ -264,17 +264,15 @@ def test_spawn_agents_save_session_opt_in():
     mock_agent = MagicMock()
     mock_agent.run_task = async_run_task
     with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
-        asyncio.run(
-            spawn_agents([{"agent": "test", "task": "t", "save_session": True}])
-        )
+        asyncio.run(run_jobs([{"agent": "test", "task": "t", "save_session": True}]))
         assert seen["save_session"] is True
 
 
-def test_spawn_agents_unknown_agent():
+def test_run_jobs_unknown_agent():
     from scripts.amon.tools.registry import READY_AGENTS
 
     with patch.dict(READY_AGENTS, {}, clear=True):
-        results = asyncio.run(spawn_agents([{"agent": "missing", "task": "x"}]))
+        results = asyncio.run(run_jobs([{"agent": "missing", "task": "x"}]))
         assert results[0]["ok"] is False
         assert results[0]["error"] == "Unknown agent: missing"
         assert results[0]["result"] is None
@@ -355,19 +353,23 @@ def test_json_requires_headless():
 
 
 def test_spawn_agents_tool_returns_json_string():
-    from scripts.amon.tools.registry import READY_AGENTS, _spawn_agents
+    from scripts.amon.tools.registry import _spawn_agents
 
-    async def async_run_task(task: str, save_session: bool = False):
-        return AgentResult(ok=True, result="hi", tools_used=[])
+    payload = json.dumps({"ok": True, "result": "hi", "error": None}).encode()
 
-    mock_agent = MagicMock()
-    mock_agent.run_task = async_run_task
-    with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
+    class FakeProc:
+        async def communicate(self):
+            return payload, b""
+
+    async def fake_exec(*cmd, **kwargs):
+        return FakeProc()
+
+    with patch("asyncio.create_subprocess_exec", fake_exec):
         raw = _spawn_agents(jobs=[{"agent": "test", "task": "t"}])
-        assert isinstance(raw, str)
-        data = json.loads(raw)
-        assert data[0]["ok"] is True
-        assert data[0]["result"] == "hi"
+    assert isinstance(raw, str)
+    data = json.loads(raw)
+    assert data[0]["ok"] is True
+    assert data[0]["result"] == "hi"
 
 
 def test_spawn_agents_tool_schema_documents_save_session():

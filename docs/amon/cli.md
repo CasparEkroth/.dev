@@ -78,10 +78,14 @@ Unknown `/…` commands print a dim “not a command” message.
 
 ```text
 amon --headless TASK --agent NAME [--json] [--save-session]
-  → spawn_agents([{agent: NAME, task: TASK, save_session: …}])
+  → run_jobs([{agent: NAME, task: TASK, save_session: …}])   # in THIS process
   → Agent.run_task (headless=True)
   → print result (rich panels) or JSON if --json
 ```
+
+The `spawn_agents` tool is the other direction: it launches `amon --headless
+--json` children, capped and killable. Headless runs in-process so a child can
+never spawn a grandchild.
 
 ### `--json` output
 

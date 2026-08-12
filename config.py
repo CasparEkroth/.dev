@@ -56,6 +56,9 @@ DEFAULT_SHELL_TIMEOUT: int = 30
 
 DEFAULT_MAX_TURNS: int = 30
 
+#: Concurrent child processes spawn_agents will run.
+DEFAULT_MAX_PARALLEL: int = 4
+
 #: Longer tool results are truncated and spilled to TOOL_OUTPUT_DIR.
 MAX_TOOL_OUTPUT_CHARS: int = 20_000
 

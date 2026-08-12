@@ -5,7 +5,7 @@ import sys
 from uuid import UUID, uuid4
 
 from config import settings
-from scripts.amon.tools.agent import spawn_agents
+from scripts.amon.tools.agent import run_jobs
 from scripts.amon.tools.registry import (
     _AGENT_DESCRIPTION_STR,
     get_registry,
@@ -124,7 +124,7 @@ def main() -> None:
             # pretty headless: spinner on stdout with the result panels.
             with terminal.spinner_context(stderr=bool(args.json)):
                 results = asyncio.run(
-                    spawn_agents(
+                    run_jobs(
                         [
                             {
                                 "agent": args.agent,

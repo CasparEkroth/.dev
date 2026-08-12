@@ -41,6 +41,27 @@ def compact_conversation(conversation: list[dict]) -> list[dict] | None:
     ] or None
 
 
+def _compact_history(conversation: list[dict]) -> bool:
+    """Summarize *conversation* in place, up to the last tool-calling turn.
+
+    Cutting there keeps surviving tool replies with the message they refer to.
+    Returns False when the summary was unusable and nothing changed.
+    """
+    cut = next(
+        (
+            i
+            for i in range(len(conversation) - 1, -1, -1)
+            if conversation[i].get("tool_calls")
+        ),
+        len(conversation),
+    )
+    summary = compact_conversation(conversation[:cut])
+    if not summary:
+        return False
+    conversation[:cut] = summary
+    return True
+
+
 def truncate_tool_output(
     text: str,
     tool: str = "",
@@ -140,7 +161,7 @@ def run_agent(
     session_id: UUID = None,
     save_session_: bool = True,
     headless: bool = False,
-    hooks: dict[str, str] = {},
+    hooks: dict[str, list[dict]] = {},
     force_first_tool: bool = False,
     max_runtime_s: float | None = None,
     model: str | None = None,
@@ -208,17 +229,38 @@ def run_agent(
             session_id=sid,
         )
 
-    if hooks.get(HookEventName.START):
+    def _inject(stdout: str) -> None:
+        """Give the model a hook's output, and keep it in the session."""
+        if not stdout.strip():
+            return
+        message = {"role": "user", "content": stdout.strip()}
+        conversation.append(message)
+        new_messages.append(message)
+
+    if not history:
+        # Closest thing to "agent activated": the first turn of a session.
+        _inject(
+            run_hook_event(
+                specs=hooks.get(HookEventName.AGENT_SPAWN, []),
+                session_id=active_session_id,
+                hook_event_name=HookEventName.AGENT_SPAWN,
+                cwd=os.getcwd(),
+            )[0]
+        )
+
+    _inject(
         run_hook_event(
-            path=hooks.get(HookEventName.START),
+            specs=hooks.get(HookEventName.START, []),
             session_id=active_session_id,
             hook_event_name=HookEventName.START,
             cwd=os.getcwd(),
             prompt=user_input,
-        )
+        )[0]
+    )
 
     message = {"content": ""}
     started_at = time.monotonic()
+    retried = False
     stop_error = "Max turns reached without a final answer."
     turns_taken = max_turns
     for turn in range(max_turns):
@@ -239,9 +281,15 @@ def run_agent(
             )
         # Degrade instead of losing the run: the stop hook and _persist still run.
         except Exception as exc:  # noqa: BLE001
+            # A full context is the likeliest cause; shrink it and retry once.
+            if not retried and _compact_history(conversation):
+                retried = True
+                continue
             stop_error = f"Model call failed: {exc}"
             turns_taken = turn + 1
             break
+
+        retried = False
 
         # Extract the message from the full ChatCompletionResponse
         choice = response["choices"][0]
@@ -262,7 +310,7 @@ def run_agent(
 
             if hooks.get(HookEventName.STOP):
                 run_hook_event(
-                    path=hooks.get(HookEventName.STOP),
+                    specs=hooks.get(HookEventName.STOP, []),
                     session_id=active_session_id,
                     hook_event_name=HookEventName.STOP,
                     cwd=os.getcwd(),
@@ -293,19 +341,19 @@ def run_agent(
                 )
             else:
                 try:
-                    if hooks.get(HookEventName.PRE_TOOL_USE):
-                        run_hook_event(
-                            path=hooks.get(HookEventName.PRE_TOOL_USE),
-                            session_id=active_session_id,
-                            hook_event_name=HookEventName.PRE_TOOL_USE,
-                            cwd=os.getcwd(),
-                            tool_name=name,
-                            tool_input=args,
-                        )
-
+                    _, blocked = run_hook_event(
+                        specs=hooks.get(HookEventName.PRE_TOOL_USE, []),
+                        session_id=active_session_id,
+                        hook_event_name=HookEventName.PRE_TOOL_USE,
+                        cwd=os.getcwd(),
+                        tool_name=name,
+                        tool_input=args,
+                    )
                     if stream_actions:
                         stream_actions("tool_call", {"name": name, "args": args})
-                    result = fn(**args)
+                    result = (
+                        f"Tool blocked by hook: {blocked}" if blocked else fn(**args)
+                    )
                 except Exception as e:
                     _persist(last_usage)
                     result = f"Error: {e}"
@@ -323,16 +371,15 @@ def run_agent(
                 "content": output,
             }
 
-            if hooks.get(HookEventName.POST_TOOL_USE):
-                run_hook_event(
-                    path=hooks.get(HookEventName.POST_TOOL_USE),
-                    session_id=active_session_id,
-                    hook_event_name=HookEventName.POST_TOOL_USE,
-                    cwd=os.getcwd(),
-                    tool_name=name,
-                    tool_input=args,
-                    tool_output=output,
-                )
+            run_hook_event(
+                specs=hooks.get(HookEventName.POST_TOOL_USE, []),
+                session_id=active_session_id,
+                hook_event_name=HookEventName.POST_TOOL_USE,
+                cwd=os.getcwd(),
+                tool_name=name,
+                tool_input=args,
+                tool_output=output,
+            )
 
             if stream_actions:
                 stream_actions("tool_result", {"name": name, "content": output})
@@ -346,25 +393,13 @@ def run_agent(
             )
 
         if last_usage["prompt_tokens"] > compact_at_tokens:
-            # Cut before the last tool_calls turn so surviving tool replies keep
-            # the message they refer to. new_messages, and the session, are whole.
-            cut = next(
-                (
-                    i
-                    for i in range(len(conversation) - 1, -1, -1)
-                    if conversation[i].get("tool_calls")
-                ),
-                len(conversation),
-            )
-            summary = compact_conversation(conversation[:cut])
-            if summary:
-                conversation[:cut] = summary
+            _compact_history(conversation)
 
     _persist(last_usage)
 
     if hooks.get(HookEventName.STOP):
         run_hook_event(
-            path=hooks.get(HookEventName.STOP),
+            specs=hooks.get(HookEventName.STOP, []),
             session_id=active_session_id,
             hook_event_name=HookEventName.STOP,
             cwd=os.getcwd(),

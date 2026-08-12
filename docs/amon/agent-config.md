@@ -50,7 +50,7 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
 | `tools` | yes | Tools **registered** for this agent (schemas exposed to the model) |
 | `allowed_tools` | yes | Subset that runs **without** confirmation (`requires_confirmation=False`) |
 | `allowed_skills` | no | List of `skill://` URI patterns for the skill catalog |
-| `hooks` | no | Map of hook event name → script path |
+| `hooks` | no | Map of hook event name → list of `{command, matcher?, timeout_ms?}` specs. A bare string or list of strings is normalized to that form. `agentSpawn`/`start` stdout joins the conversation; a `preToolUse` hook exiting 2 blocks the tool |
 | `max_turns` | no | Max agent loop turns (default `DEFAULT_MAX_TURNS` = 30, must be `> 0`) |
 | `force_first_tool` | no | Require a tool call on the first turn (default `false`, so an agent can open with a clarifying question) |
 | `max_runtime_s` | no | Wall-clock budget in seconds (default none). On expiry the run stops between turns and returns its partial result |
@@ -91,12 +91,17 @@ Notable tool behaviour:
   conversation. Longer output keeps its head and tail, and the full text is
   written to `TOOL_OUTPUT_DIR` with the path named in the inline marker, so the
   agent can read it back with `read_file`.
+- `spawn_agents` runs each job as a child `amon --headless --json` process, at
+  most `max_parallel` (default `DEFAULT_MAX_PARALLEL`) at a time. A job past
+  `timeout_s` is killed. Children are separate processes, so one cannot corrupt
+  shared state or outlive the parent.
 - A run compacts its own history when the prompt crosses `COMPACT_AT_TOKENS`
   (75% of `BASE_CONTEXT_WINDOW`): everything before the last tool-calling turn
   is summarized by the same code path as `/compact`, so a long run keeps going
   instead of being rejected for exceeding the context window. The session file
-  on disk stays complete. If a model call fails anyway, the run returns its
-  partial result and error rather than losing everything.
+  on disk stays complete. If a model call fails, the history is compacted and
+  the turn retried once; if it fails again the run returns its partial result
+  and error rather than losing everything.
 
 ## Project-local override pattern
 

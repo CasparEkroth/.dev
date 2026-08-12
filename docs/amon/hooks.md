@@ -7,37 +7,70 @@ Called from: `scripts/amon/agent_loop.py`
 
 ## Events
 
-| Event key (JSON) | Enum | When | Extra env |
-|------------------|------|------|-----------|
-| `start` | `HookEventName.START` | Before the model loop handles a user prompt | `PROMPT` |
-| `stop` | `HookEventName.STOP` | When the model returns a final text answer (no more tools), and again if the loop exits without a final message path | `RESPONSE` |
-| `preToolUse` | `HookEventName.PRE_TOOL_USE` | After confirmation, before the tool runs | `TOOL_NAME`, `TOOL_INPUT` |
-| `postToolUse` | `HookEventName.POST_TOOL_USE` | After the tool returns | `TOOL_NAME`, `TOOL_INPUT`, `TOOL_OUTPUT` |
+| Event key (JSON) | Enum | When | Extra payload |
+|------------------|------|------|---------------|
+| `agentSpawn` | `HookEventName.AGENT_SPAWN` | First turn of a session, before the model is called | — |
+| `start` | `HookEventName.START` | Before the model loop handles a user prompt | `prompt` |
+| `stop` | `HookEventName.STOP` | When the model returns a final text answer, and when a run ends on a budget or a failed call | `response` |
+| `preToolUse` | `HookEventName.PRE_TOOL_USE` | After confirmation, before the tool runs | `tool_name`, `tool_input` |
+| `postToolUse` | `HookEventName.POST_TOOL_USE` | After the tool returns | `tool_name`, `tool_input`, `tool_output` |
 
-Always set for every event:
+`agentSpawn` and `start` are **context-contributing**: their stdout is appended to
+the conversation as a user message and persisted with the session, so an
+environment probe reaches the model without the agent having to run it.
 
-| Env var | Meaning |
-|---------|---------|
-| `SESSION_ID` | Current session UUID |
-| `HOOK_EVENT_NAME` | Event name string (`start`, `stop`, `preToolUse`, `postToolUse`) |
-| `CWD` | Working directory passed by the agent loop |
+## Configuration
 
-Details: [amon-author reference](examples/skills/amon-author/references/hook-events.md).
-
-## Wiring hooks on an agent
+Each event maps to a list of hook specs. A bare string or a list of strings is
+accepted and normalized, so older configs keep working:
 
 ```json
 {
   "hooks": {
-    "start": "~/.amon/hooks/log.sh",
-    "stop": "~/.amon/hooks/log.sh",
-    "preToolUse": "~/.amon/hooks/log.sh",
+    "agentSpawn": [{ "command": "~/.amon/hooks/probe.sh" }],
+    "stop": ["~/.amon/hooks/log.sh", "~/.amon/hooks/score.sh"],
+    "preToolUse": [
+      { "command": "~/.amon/hooks/guard.sh", "matcher": "write_file", "timeout_ms": 2000 }
+    ],
     "postToolUse": "~/.amon/hooks/log.sh"
   }
 }
 ```
 
-Paths are resolved with `Path(hook).expanduser().resolve()`. Missing files are silently skipped (`None`).
+| Spec field | Required | Meaning |
+|------------|----------|---------|
+| `command` | yes | Script path (`~` expanded) |
+| `matcher` | no | Glob against the tool name; pre/postToolUse only. No matcher runs for every tool |
+| `timeout_ms` | no | Max run time, default 10000. On expiry the hook is abandoned |
+
+Hooks on one event run in order. Missing scripts are skipped silently.
+
+## Payload
+
+The event is written to the hook's **stdin as JSON**:
+
+```json
+{
+  "hook_event_name": "preToolUse",
+  "cwd": "/current/working/directory",
+  "session_id": "13e5ab9e-…",
+  "tool_name": "write_file",
+  "tool_input": { "content": [{ "path": "a.txt", "old": "", "new": "hi" }] }
+}
+```
+
+The same values are also exported as environment variables — `SESSION_ID`,
+`HOOK_EVENT_NAME`, `CWD`, plus the upper-cased extras (`TOOL_NAME`, `TOOL_INPUT`,
+`TOOL_OUTPUT`, `PROMPT`, `RESPONSE`) — so env-reading hooks written before the
+stdin payload still work.
+
+## Exit codes
+
+| Code | Effect |
+|------|--------|
+| 0 | Success. For `agentSpawn`/`start`, stdout joins the conversation |
+| 2 | **preToolUse only**: block the tool. Stderr is returned to the model instead of the tool's result |
+| other | Logged as a warning. The run continues — a hook can never break it |
 
 ## How scripts are executed
 
@@ -47,35 +80,43 @@ Paths are resolved with `Path(hook).expanduser().resolve()`. Missing files are s
 | executable (any other) | run path directly (needs shebang + `+x`) |
 | non-executable other | `bash <path>` |
 
-Defaults: `timeout=30`, `check=True`, stdout/stderr captured. A failing script raises (subprocess error) — keep hooks reliable and fast.
+## Examples
 
-## Minimal bash example
+See [examples/hooks/log.sh](examples/hooks/log.sh) and
+[examples/hooks/log.py](examples/hooks/log.py).
 
-See [examples/hooks/log.sh](examples/hooks/log.sh).
+Read the event from stdin:
 
 ```bash
 #!/usr/bin/env bash
-echo "$HOOK_EVENT_NAME session=$SESSION_ID" >> "${CWD:-.}/agent.log"
+EVENT=$(cat)
+echo "$EVENT" >> "${CWD:-.}/agent.log"
 ```
 
-## Minimal Python example
+Block writes outside a directory:
 
-See [examples/hooks/log.py](examples/hooks/log.py).
+```bash
+#!/usr/bin/env bash
+EVENT=$(cat)
+case "$EVENT" in
+  *'"path": "/etc/'*) echo "writes to /etc are not allowed" >&2; exit 2 ;;
+esac
+exit 0
+```
 
-```python
-import os
-from pathlib import Path
+Contribute environment facts to the agent's context:
 
-log = Path(os.environ.get("CWD", ".")) / "agent.log"
-with log.open("a") as f:
-    f.write(f"{os.environ.get('HOOK_EVENT_NAME')} {os.environ.get('SESSION_ID')}\n")
+```bash
+#!/usr/bin/env bash
+echo "python: $(command -v python3)"
+echo "cwd: $(pwd)"
 ```
 
 ## What hooks are good for
 
 - Audit logging (prompts, tools, responses)
-- Notifications (desktop, chat webhook) on `stop`
-- Guardrails / extra policy checks around tools (note: failure currently errors the run)
-- Appending session metadata to project files
+- Environment discovery via `agentSpawn`, without spending a tool call
+- Guardrails: block a tool with exit code 2 and tell the model why
+- Notifications or post-processing on `stop`
 
 Adding a hook step by step? The [amon-author skill](examples/skills/amon-author/SKILL.md) has the checklist.

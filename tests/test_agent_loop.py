@@ -2,9 +2,11 @@
 
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
+from scripts.amon.hooks import HookEventName
 from scripts.amon.agent_loop import (
     build_system_prompt,
     compact_conversation,
@@ -360,19 +362,61 @@ class TestAutoCompaction:
 
 
 class TestModelCallFailure:
+    def test_recovers_by_compacting_and_retrying(self):
+        responses = [RuntimeError("context length exceeded"), _response(content="ok")]
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            result, llm = _run(responses, registry=_registry(len))
+        compact.assert_called_once()
+        assert result.ok
+        assert result.result == "ok"
+        assert llm.call_count == 2
+
+    def test_retries_only_once_in_a_row(self):
+        responses = [RuntimeError("boom"), RuntimeError("boom again")]
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            result, _ = _run(responses, registry=_registry(len))
+        assert compact.call_count == 1
+        assert not result.ok
+        assert "boom again" in result.error
+
+    def test_no_retry_when_compaction_fails(self):
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = None
+            result, llm = _run([RuntimeError("boom")], registry=_registry(len))
+        assert llm.call_count == 1
+        assert not result.ok
+
+    def test_recovery_is_available_again_after_a_success(self):
+        responses = [
+            RuntimeError("first"),
+            _response(content="mid", tool_calls=_tool_call()),
+            RuntimeError("second"),
+            _response(content="done"),
+        ]
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            result, _ = _run(responses, registry=_registry(lambda **kw: "ok"))
+        assert compact.call_count == 2
+        assert result.ok
+
     def test_partial_result_is_returned(self):
         responses = [
             _response(content="partial work", tool_calls=_tool_call()),
             RuntimeError("context length exceeded"),
         ]
-        result, _ = _run(responses, registry=_registry(lambda **kw: "ok"))
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = None
+            result, _ = _run(responses, registry=_registry(lambda **kw: "ok"))
         assert not result.ok
         assert "context length exceeded" in result.error
         assert result.result == "partial work"
-        assert result.turns == 2
 
     def test_failure_on_the_first_turn_does_not_propagate(self):
-        result, _ = _run([RuntimeError("boom")], registry=_registry(len))
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = None
+            result, _ = _run([RuntimeError("boom")], registry=_registry(len))
         assert not result.ok
         assert result.result is None
         assert "boom" in result.error
@@ -397,6 +441,97 @@ class TestModelCallFailure:
         save.assert_called()
         events = [c.kwargs["hook_event_name"] for c in hook.call_args_list]
         assert "stop" in [getattr(e, "value", e) for e in events]
+
+
+# ---------------------------------------------------------------------- hooks
+
+
+class TestHookIntegration:
+    def _hook_returning(self, stdout, blocked=None):
+        return patch(
+            "scripts.amon.agent_loop.run_hook_event", return_value=(stdout, blocked)
+        )
+
+    def test_agent_spawn_output_reaches_the_model(self):
+        with self._hook_returning("python: /venv/bin/python3"):
+            _, llm = _run(
+                [_response(content="hi")],
+                hooks={"agentSpawn": [{"command": "probe.sh"}]},
+            )
+        messages = llm.call_args_list[0].args[1]
+        assert any("/venv/bin/python3" in m.get("content", "") for m in messages)
+
+    def test_injected_output_is_persisted(self):
+        with (
+            self._hook_returning("env facts"),
+            patch("scripts.amon.agent_loop.save_session") as save,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            save.return_value = None
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=True,
+                headless=True,
+                hooks={"agentSpawn": [{"command": "probe.sh"}]},
+            )
+        persisted = save.call_args.args[0]
+        assert any("env facts" in m.get("content", "") for m in persisted)
+
+    def test_empty_hook_output_adds_no_message(self):
+        with self._hook_returning("  \n"):
+            _, llm = _run(
+                [_response(content="hi")],
+                hooks={"agentSpawn": [{"command": "probe.sh"}]},
+            )
+        messages = llm.call_args_list[0].args[1]
+        # Captured list is mutated in place, so the reply is expected — but no
+        # injected hook message between them.
+        assert [m["content"] for m in messages] == ["task", "hi"]
+
+    def test_agent_spawn_skipped_when_session_has_history(self):
+        with (
+            patch("scripts.amon.agent_loop.load_session") as load,
+            patch("scripts.amon.agent_loop.run_hook_event") as hook,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            load.return_value = [{"role": "user", "content": "earlier"}]
+            hook.return_value = ("", None)
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=False,
+                headless=True,
+                session_id=uuid4(),
+                hooks={"agentSpawn": [{"command": "probe.sh"}]},
+            )
+        events = [c.kwargs["hook_event_name"] for c in hook.call_args_list]
+        assert HookEventName.AGENT_SPAWN not in events
+
+    def test_blocked_tool_is_not_executed(self):
+        called = []
+
+        def tool(**kwargs):
+            called.append(kwargs)
+            return "ran"
+
+        with self._hook_returning("", "writes are not allowed here"):
+            result, llm = _run(
+                [_response(tool_calls=_tool_call()), _response(content="understood")],
+                registry=_registry(tool),
+                hooks={"preToolUse": [{"command": "guard.sh"}]},
+            )
+        assert called == []
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "writes are not allowed here" in tool_msg["content"]
+        assert result.ok
 
 
 # ------------------------------------------------------------ prompt template

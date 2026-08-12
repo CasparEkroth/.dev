@@ -1,8 +1,10 @@
 import json
 import asyncio
 import logging
+import os
+import sys
 from pathlib import Path
-from config import DEFAULT_MAX_TURNS
+from config import DEFAULT_MAX_PARALLEL, DEFAULT_MAX_TURNS, REPO_DIR
 from scripts.amon.agent_loop import AgentResult, run_agent
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing import Any
@@ -19,7 +21,9 @@ class Agent(BaseModel):
     allowed_tools: list[str]
     max_turns: int = Field(default=DEFAULT_MAX_TURNS, gt=0)
     allowed_skills: list[str] = Field(default_factory=list)
-    hooks: dict[str, str] = Field(default_factory=dict)
+    #: event -> [{command, matcher?, timeout_ms?}]. A bare string or a list of
+    #: strings is accepted and normalized to this form.
+    hooks: dict[str, list[dict]] = Field(default_factory=dict)
     #: Require a tool call on turn 0. Off so an agent can open with a question.
     force_first_tool: bool = False
     #: Wall-clock budget for one run, in seconds.
@@ -29,6 +33,19 @@ class Agent(BaseModel):
     system_prompt_template: str | None = None
     #: TODO: accepted and validated, but no server is started yet.
     mcp_servers: dict[str, dict] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_hooks(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("hooks"), dict):
+            data["hooks"] = {
+                event: [
+                    {"command": s} if isinstance(s, str) else s
+                    for s in ([spec] if isinstance(spec, (str, dict)) else spec)
+                ]
+                for event, spec in data["hooks"].items()
+            }
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -97,8 +114,23 @@ def load_ready_agents() -> dict[str, Agent]:
     return agents
 
 
-async def spawn_agents(jobs: list[dict]) -> list[dict]:
-    """Run agent jobs concurrently and return structured result dicts."""
+def _failed(agent: str, task: str, error: str) -> dict:
+    """Result payload for a job that never produced one."""
+    return {
+        "ok": False,
+        "agent": agent,
+        "task": task,
+        "result": None,
+        "error": error,
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "turns": 0,
+        "tools_used": [],
+        "session_id": None,
+    }
+
+
+async def run_jobs(jobs: list[dict]) -> list[dict]:
+    """Run agent jobs in THIS process. Used by `amon --headless`."""
     from scripts.amon.tools.registry import READY_AGENTS
 
     async def run_one(job: dict) -> dict:
@@ -106,62 +138,75 @@ async def spawn_agents(jobs: list[dict]) -> list[dict]:
         task = job.get("task", "")
         try:
             if agent_name not in READY_AGENTS:
-                return {
-                    "ok": False,
-                    "agent": agent_name,
-                    "task": task,
-                    "result": None,
-                    "error": f"Unknown agent: {agent_name}",
-                    "usage": {
-                        "prompt_tokens": 0,
-                        "completion_tokens": 0,
-                        "total_tokens": 0,
-                    },
-                    "turns": 0,
-                    "tools_used": [],
-                    "session_id": None,
-                }
-            agent = READY_AGENTS[agent_name]
+                return _failed(agent_name, task, f"Unknown agent: {agent_name}")
             # Default False: match CLI headless (opt-in via --save-session / job flag).
-            result = await agent.run_task(
+            result = await READY_AGENTS[agent_name].run_task(
                 task=task, save_session=bool(job.get("save_session", False))
             )
-            payload = (
-                result.to_dict()
-                if isinstance(result, AgentResult)
-                else {
-                    "ok": True,
-                    "result": result,
-                    "error": None,
-                    "usage": {
-                        "prompt_tokens": 0,
-                        "completion_tokens": 0,
-                        "total_tokens": 0,
-                    },
-                    "turns": 0,
-                    "tools_used": [],
-                    "session_id": None,
-                }
-            )
-            payload["agent"] = agent_name
-            payload["task"] = task
-            return payload
+            return {**result.to_dict(), "agent": agent_name, "task": task}
         except Exception as e:
-            logger.exception("spawn_agents job failed for %s", agent_name)
-            return {
-                "ok": False,
-                "agent": agent_name,
-                "task": task,
-                "result": None,
-                "error": str(e),
-                "usage": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                },
-                "turns": 0,
-                "tools_used": [],
-                "session_id": None,
-            }
+            logger.exception("job failed for %s", agent_name)
+            return _failed(agent_name, task, str(e))
+
+    return list(await asyncio.gather(*[run_one(j) for j in jobs]))
+
+
+async def spawn_agents(
+    jobs: list[dict],
+    max_parallel: int = DEFAULT_MAX_PARALLEL,
+    timeout_s: float | None = None,
+) -> list[dict]:
+    """Run agent jobs as child processes, at most *max_parallel* at a time.
+
+    Children are separate processes, so one cannot corrupt shared state or
+    outlive the parent: a job past *timeout_s* is killed. Each child is an
+    `amon --headless --json` run and returns that payload.
+    """
+    sem = asyncio.Semaphore(max(1, max_parallel))
+    # The child is launched as a module, so it needs the repo on PYTHONPATH; cwd
+    # is inherited because it defines the agent's workspace.
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            p for p in (str(REPO_DIR), os.environ.get("PYTHONPATH", "")) if p
+        ),
+    }
+
+    async def run_one(job: dict) -> dict:
+        agent_name = job.get("agent", "")
+        task = job.get("task", "")
+        cmd = [
+            sys.executable,
+            "-m",
+            "scripts.amon.amon_cli",
+            "--headless",
+            task,
+            "--agent",
+            agent_name,
+            "--json",
+        ]
+        if job.get("save_session"):
+            cmd.append("--save-session")
+
+        async with sem:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), timeout_s)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return _failed(agent_name, task, f"timed out after {timeout_s}s")
+
+        try:
+            payload = json.loads(out)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _failed(agent_name, task, (err.decode() or "no output")[-500:])
+        return {**payload, "agent": agent_name, "task": task}
 
     return list(await asyncio.gather(*[run_one(j) for j in jobs]))
