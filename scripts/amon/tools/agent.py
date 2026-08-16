@@ -31,6 +31,8 @@ class Agent(BaseModel):
     model: str | None = None
     #: See DEFAULT_SYSTEM_PROMPT_TEMPLATE.
     system_prompt_template: str | None = None
+    #: Per-agent ceiling for tool results; None keeps the global default.
+    max_tool_output_chars: int | None = None
     #: TODO: accepted and validated, but no server is started yet.
     mcp_servers: dict[str, dict] = Field(default_factory=dict)
 
@@ -75,8 +77,21 @@ class Agent(BaseModel):
         except ValidationError as e:
             raise ValueError(f"Invalid agent config in {config_path}: {e}") from e
 
-    async def run_task(self, task: str, save_session: bool = True) -> AgentResult:
+    async def run_task(
+        self,
+        task: str,
+        save_session: bool = True,
+        session_id=None,
+        model: str | None = None,
+        max_turns: int | None = None,
+    ) -> AgentResult:
         from scripts.amon.tools.registry import get_registry
+
+        stream_actions = None
+        if os.environ.get("AMON_STREAM"):
+            from scripts.amon.terminal import stream_action_stderr
+
+            stream_actions = stream_action_stderr
 
         return await asyncio.to_thread(
             run_agent,
@@ -88,12 +103,15 @@ class Agent(BaseModel):
             skill_catalog=catalog_for_agent(self.allowed_skills),
             headless=True,
             save_session_=save_session,
-            max_turns=self.max_turns,
+            session_id=session_id,
+            max_turns=max_turns or self.max_turns,
             hooks=self.hooks,
             force_first_tool=self.force_first_tool,
             max_runtime_s=self.max_runtime_s,
-            model=self.model,
+            model=model or self.model,
             system_prompt_template=self.system_prompt_template,
+            stream_actions=stream_actions,
+            max_tool_output_chars=self.max_tool_output_chars,
         )
 
 
@@ -141,7 +159,11 @@ async def run_jobs(jobs: list[dict]) -> list[dict]:
                 return _failed(agent_name, task, f"Unknown agent: {agent_name}")
             # Default False: match CLI headless (opt-in via --save-session / job flag).
             result = await READY_AGENTS[agent_name].run_task(
-                task=task, save_session=bool(job.get("save_session", False))
+                task=task,
+                save_session=bool(job.get("save_session", False)),
+                session_id=job.get("session_id"),
+                model=job.get("model"),
+                max_turns=job.get("max_turns"),
             )
             return {**result.to_dict(), "agent": agent_name, "task": task}
         except Exception as e:
@@ -155,12 +177,16 @@ async def spawn_agents(
     jobs: list[dict],
     max_parallel: int = DEFAULT_MAX_PARALLEL,
     timeout_s: float | None = None,
+    output: str | None = None,
 ) -> list[dict]:
     """Run agent jobs as child processes, at most *max_parallel* at a time.
 
     Children are separate processes, so one cannot corrupt shared state or
     outlive the parent: a job past *timeout_s* is killed. Each child is an
     `amon --headless --json` run and returns that payload.
+
+    When *output* is set, the full result list is written there even if some
+    jobs failed — that file is the outer harness checkpoint.
     """
     sem = asyncio.Semaphore(max(1, max_parallel))
     # The child is launched as a module, so it needs the repo on PYTHONPATH; cwd
@@ -187,6 +213,12 @@ async def spawn_agents(
         ]
         if job.get("save_session"):
             cmd.append("--save-session")
+        if job.get("session_id"):
+            cmd.extend(["--session-id", str(job["session_id"])])
+        if job.get("model"):
+            cmd.extend(["--model", str(job["model"])])
+        if job.get("max_turns") is not None:
+            cmd.extend(["--max-turns", str(job["max_turns"])])
 
         async with sem:
             proc = await asyncio.create_subprocess_exec(
@@ -209,4 +241,11 @@ async def spawn_agents(
             return _failed(agent_name, task, (err.decode() or "no output")[-500:])
         return {**payload, "agent": agent_name, "task": task}
 
-    return list(await asyncio.gather(*[run_one(j) for j in jobs]))
+    results = list(await asyncio.gather(*[run_one(j) for j in jobs]))
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return results

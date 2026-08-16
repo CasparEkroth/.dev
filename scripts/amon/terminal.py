@@ -256,9 +256,19 @@ def confirm_tool(name: str, args: dict) -> bool:
         return bool(questionary.confirm("Allow?", default=False).ask())
 
 
-def stream_action(event: str, data: dict) -> None:
+def stream_action(event: str, data: dict, *, console: Console | None = None) -> None:
+    """Render one agent event. Pass console=_stderr_console to keep stdout clean."""
+    out = console if console is not None else globals()["console"]
+
+    def _print(*args, **kwargs) -> None:
+        # Stdout path shares Live with the spinner; stderr does not.
+        if out is globals()["console"]:
+            _ui_print(*args, **kwargs)
+        else:
+            out.print(*args, **kwargs)
+
     if event == "reasoning":
-        _ui_print(
+        _print(
             Panel(
                 Markdown(data.get("content", "")),
                 title="[bold green]Agent[/bold green]",
@@ -272,7 +282,7 @@ def stream_action(event: str, data: dict) -> None:
         else:
             formated = _format_args(data.get("args"))
             body = f"[bold]{data.get('name')}[/bold]\n[dim]{formated}[/dim]"
-        _ui_print(
+        _print(
             Panel(
                 body,
                 title="[cyan]→ Tool[/cyan]",
@@ -289,13 +299,18 @@ def stream_action(event: str, data: dict) -> None:
                 + str(len(content))
                 + " chars total)"
             )
-        _ui_print(
+        _print(
             Panel(
                 content,
                 title=f"[dim]← Result from {data.get('name', 'tool')}[/dim]",
                 border_style="dim",
             )
         )
+
+
+def stream_action_stderr(event: str, data: dict) -> None:
+    """Headless streamer: same panels, always on stderr."""
+    stream_action(event, data, console=_stderr_console)
 
 
 def print_response(text: str) -> None:

@@ -79,6 +79,56 @@ def test_save_session_is_forwarded():
     assert "--save-session" in calls[0]
 
 
+def test_session_model_max_turns_are_forwarded():
+    calls = []
+    proc = FakeProc(stdout=json.dumps(PAYLOAD).encode())
+    with _exec_patch(proc, calls=calls):
+        asyncio.run(
+            spawn_agents(
+                [
+                    {
+                        "agent": "w",
+                        "task": "t",
+                        "session_id": "abc-123",
+                        "model": "gpt-test",
+                        "max_turns": 12,
+                    }
+                ]
+            )
+        )
+    cmd = calls[0]
+    assert "--session-id" in cmd and "abc-123" in cmd
+    assert "--model" in cmd and "gpt-test" in cmd
+    assert "--max-turns" in cmd and "12" in cmd
+
+
+def test_output_file_written_even_when_jobs_fail(tmp_path):
+    ok = FakeProc(stdout=json.dumps(PAYLOAD).encode())
+    bad = FakeProc(stdout=b"not json", stderr=b"boom")
+    procs = iter([ok, bad])
+
+    async def fake_exec(*cmd, **kwargs):
+        return next(procs)
+
+    out = tmp_path / "results.json"
+    with patch("asyncio.create_subprocess_exec", fake_exec):
+        results = asyncio.run(
+            spawn_agents(
+                [
+                    {"agent": "w", "task": "t0"},
+                    {"agent": "w", "task": "t1"},
+                ],
+                output=str(out),
+            )
+        )
+    assert out.is_file()
+    dumped = json.loads(out.read_text())
+    assert len(dumped) == 2
+    assert dumped[0]["ok"] is True
+    assert dumped[1]["ok"] is False
+    assert results == dumped
+
+
 def test_non_json_output_reports_stderr():
     proc = FakeProc(stdout=b"not json", stderr=b"child blew up")
     with _exec_patch(proc):

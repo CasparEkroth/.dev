@@ -54,11 +54,12 @@ def read_file(path: str, start_line: int = None, end_line: int = None) -> dict:
         }
     lines = content.splitlines()
 
+    # Tool schema is 1-based inclusive; convert to 0-based slice indices.
+    start = max(start_line - 1, 0) if start_line else 0
+    end = end_line if end_line else len(lines)
     return {
         "ok": True,
-        "content": lines[
-            start_line if start_line else 0 : end_line if end_line else len(lines)
-        ],
+        "content": lines[start:end],
     }
 
 

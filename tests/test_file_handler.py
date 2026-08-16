@@ -2,6 +2,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from shared.file_handler import (
+    read_file,
     read_files,
     scan_folder,
     write_file,
@@ -190,6 +191,27 @@ class TestReadFiles(unittest.TestCase):
         p = self._make("empty.txt", "")
         result = read_files([p])
         self.assertEqual(result[0]["content"], "")
+
+
+class TestReadFile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.path = self.root / "sample.txt"
+        self.path.write_text("line1\nline2\nline3\nline4\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_start_line_1_returns_every_line(self):
+        result = read_file(str(self.path), start_line=1)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["content"], ["line1", "line2", "line3", "line4"])
+
+    def test_start_and_end_line_are_1_based_inclusive(self):
+        result = read_file(str(self.path), start_line=2, end_line=3)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["content"], ["line2", "line3"])
 
 
 if __name__ == "__main__":

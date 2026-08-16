@@ -235,6 +235,22 @@ tool_registry["spawn_agents"] = {
                                     ),
                                     "default": False,
                                 },
+                                "session_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "External session id for this child. "
+                                        "Correlates logs and makes a crashed "
+                                        "run resumable."
+                                    ),
+                                },
+                                "model": {
+                                    "type": "string",
+                                    "description": "Override the agent model for this job only.",
+                                },
+                                "max_turns": {
+                                    "type": "integer",
+                                    "description": "Override max turns for this job only.",
+                                },
                             },
                             "required": ["agent", "task"],
                         },
@@ -248,6 +264,13 @@ tool_registry["spawn_agents"] = {
                     "timeout_s": {
                         "type": "number",
                         "description": "Per-job wall-clock limit; the child is killed on expiry. Omit for no limit.",
+                    },
+                    "output": {
+                        "type": "string",
+                        "description": (
+                            "Optional path to write the full result list as JSON, "
+                            "even when some jobs failed. Use as a checkpoint."
+                        ),
                     },
                 },
                 "required": ["jobs"],

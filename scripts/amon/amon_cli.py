@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import os
 import sys
 from uuid import UUID, uuid4
 
@@ -66,6 +67,25 @@ def main() -> None:
     parser.add_argument("--agent", type=str, default="default")
 
     parser.add_argument("--save-session", action="store_true")
+    parser.add_argument(
+        "--session-id",
+        type=UUID,
+        help="Headless only: use this session id (resume if it exists)",
+    )
+    parser.add_argument(
+        "--model", type=str, default=None, help="Headless only: override agent model"
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Headless only: override agent max turns",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Headless only: stream tool calls/results to stderr",
+    )
 
     args = parser.parse_args()
 
@@ -86,6 +106,16 @@ def main() -> None:
 
     if args.save_session and not args.headless:
         parser.error("--save-session requires --headless")
+    if args.session_id is not None and not args.headless:
+        parser.error("--session-id requires --headless")
+    if args.model is not None and not args.headless:
+        parser.error("--model requires --headless")
+    if args.max_turns is not None and not args.headless:
+        parser.error("--max-turns requires --headless")
+    if args.stream and not args.headless:
+        parser.error("--stream requires --headless")
+    if args.stream:
+        os.environ["AMON_STREAM"] = "1"
 
     if args.list_sessions:
         sessions = _sorted_sessions()
@@ -123,17 +153,18 @@ def main() -> None:
             # --json: spinner on stderr so stdout stays pipe-clean.
             # pretty headless: spinner on stdout with the result panels.
             with terminal.spinner_context(stderr=bool(args.json)):
-                results = asyncio.run(
-                    run_jobs(
-                        [
-                            {
-                                "agent": args.agent,
-                                "task": args.headless,
-                                "save_session": args.save_session,
-                            }
-                        ]
-                    )
-                )
+                job = {
+                    "agent": args.agent,
+                    "task": args.headless,
+                    "save_session": args.save_session,
+                }
+                if args.session_id is not None:
+                    job["session_id"] = args.session_id
+                if args.model is not None:
+                    job["model"] = args.model
+                if args.max_turns is not None:
+                    job["max_turns"] = args.max_turns
+                results = asyncio.run(run_jobs([job]))
         except Exception as e:
             results = [
                 {

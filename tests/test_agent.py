@@ -156,6 +156,7 @@ def test_run_task_forwards_new_fields():
         force_first_tool=True,
         max_runtime_s=123.0,
         model="pinned-model",
+        max_tool_output_chars=50_000,
         mcp_servers={"git": {"command": "mcp-server-git"}},
     )
 
@@ -168,8 +169,25 @@ def test_run_task_forwards_new_fields():
     assert kwargs["force_first_tool"] is True
     assert kwargs["max_runtime_s"] == 123.0
     assert kwargs["model"] == "pinned-model"
+    assert kwargs["max_tool_output_chars"] == 50_000
+    assert kwargs["stream_actions"] is None
     # mcp_servers is a stub: accepted on the config, not yet wired into a run.
     assert "mcp_servers" not in kwargs
+
+
+def test_run_task_streams_when_amon_stream_set(monkeypatch):
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=[],
+        allowed_tools=[],
+    )
+    monkeypatch.setenv("AMON_STREAM", "1")
+    with patch("scripts.amon.tools.agent.run_agent") as run:
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+    assert run.call_args.kwargs["stream_actions"] is not None
 
 
 def test_get_registry_does_not_leak_permissions_between_agents():
@@ -224,8 +242,9 @@ def test_run_jobs():
 
     seen = {}
 
-    async def async_run_task(task: str, save_session: bool = True):
+    async def async_run_task(task: str, save_session: bool = True, **kwargs):
         seen["save_session"] = save_session
+        seen["kwargs"] = kwargs
         return AgentResult(
             ok=True,
             result="result",
@@ -257,7 +276,7 @@ def test_spawn_agents_save_session_opt_in():
 
     seen = {}
 
-    async def async_run_task(task: str, save_session: bool = True):
+    async def async_run_task(task: str, save_session: bool = True, **kwargs):
         seen["save_session"] = save_session
         return AgentResult(ok=True, result="ok")
 
@@ -334,12 +353,17 @@ def test_json_requires_headless():
             resume=False,
             resume_id=None,
             list_sessions=False,
+            list_agents=False,
             delete_session=None,
             keep_N_sessions=None,
             headless=None,
             json=True,
             agent="default",
             save_session=False,
+            session_id=None,
+            model=None,
+            max_turns=None,
+            stream=False,
         ),
     ):
         # argparse.ArgumentParser.error raises SystemExit
@@ -378,5 +402,67 @@ def test_spawn_agents_tool_schema_documents_save_session():
     schema = tool_registry["spawn_agents"]["schema"]["function"]
     props = schema["parameters"]["properties"]["jobs"]["items"]["properties"]
     assert "save_session" in props
+    assert "session_id" in props
+    assert "model" in props
+    assert "max_turns" in props
+    assert "output" in schema["parameters"]["properties"]
     assert "JSON" in schema["description"] or "json" in schema["description"].lower()
     assert "ok" in schema["description"]
+
+
+def test_run_task_resolves_model_and_max_turns_overrides():
+    from scripts.amon.tools.agent import Agent
+
+    agent = Agent(
+        name="t",
+        description="d",
+        system_prompt="s",
+        tools=["shell"],
+        allowed_tools=["shell"],
+        model="agent-model",
+        max_turns=9,
+    )
+    with patch("scripts.amon.tools.agent.run_agent") as run:
+        run.return_value = AgentResult(ok=True, result="ok")
+        asyncio.run(agent.run_task("task", model="job-model", max_turns=3))
+    kwargs = run.call_args.kwargs
+    assert kwargs["model"] == "job-model"
+    assert kwargs["max_turns"] == 3
+
+    with patch("scripts.amon.tools.agent.run_agent") as run:
+        run.return_value = AgentResult(ok=True, result="ok")
+        asyncio.run(agent.run_task("task"))
+    kwargs = run.call_args.kwargs
+    assert kwargs["model"] == "agent-model"
+    assert kwargs["max_turns"] == 9
+
+
+def test_run_jobs_forwards_session_model_max_turns():
+    from scripts.amon.tools.registry import READY_AGENTS
+
+    seen = {}
+
+    async def async_run_task(task: str, save_session: bool = True, **kwargs):
+        seen.update(kwargs)
+        seen["save_session"] = save_session
+        return AgentResult(ok=True, result="ok")
+
+    mock_agent = MagicMock()
+    mock_agent.run_task = async_run_task
+    with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
+        asyncio.run(
+            run_jobs(
+                [
+                    {
+                        "agent": "test",
+                        "task": "t",
+                        "session_id": "sid-1",
+                        "model": "m1",
+                        "max_turns": 7,
+                    }
+                ]
+            )
+        )
+    assert seen["session_id"] == "sid-1"
+    assert seen["model"] == "m1"
+    assert seen["max_turns"] == 7

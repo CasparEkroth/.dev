@@ -167,6 +167,7 @@ def run_agent(
     model: str | None = None,
     compact_at_tokens: int = COMPACT_AT_TOKENS,
     system_prompt_template: str | None = None,
+    max_tool_output_chars: int | None = None,
 ) -> AgentResult:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
@@ -325,21 +326,33 @@ def run_agent(
 
         for call in tool_calls:
             name = call["function"]["name"]
-            args = json.loads(call["function"]["arguments"])
             tools_used.append(name)
+            entry = tool_registry.get(name)
+            try:
+                args = json.loads(call["function"]["arguments"])
+            except json.JSONDecodeError as exc:
+                args, arg_error = {}, f"Invalid arguments JSON: {exc}"
+            else:
+                arg_error = None
 
-            fn = tool_registry[name]["fn"]
-            need_confirmation = tool_registry[name]["requires_confirmation"]
-            if headless and need_confirmation:
+            if entry is None:
+                result = (
+                    f"Unknown tool '{name}'. Available: "
+                    f"{', '.join(sorted(tool_registry))}"
+                )
+            elif arg_error:
+                result = arg_error
+            elif headless and entry["requires_confirmation"]:
                 result = (
                     f"Agent is running in headless mode and doesn't have "
                     f"permission to run tool {name}."
                 )
-            elif need_confirmation and not confirm_fn(name, args):
+            elif entry["requires_confirmation"] and not confirm_fn(name, args):
                 result = (
                     f"User denied permission to run tool '{name}' with args {args}."
                 )
             else:
+                fn = entry["fn"]
                 try:
                     _, blocked = run_hook_event(
                         specs=hooks.get(HookEventName.PRE_TOOL_USE, []),
@@ -362,7 +375,7 @@ def run_agent(
                 str(result),
                 tool=name,
                 session_id=active_session_id,
-                limit=MAX_TOOL_OUTPUT_CHARS,
+                limit=max_tool_output_chars or MAX_TOOL_OUTPUT_CHARS,
                 spill_dir=TOOL_OUTPUT_DIR,
             )
             tool_msg = {

@@ -15,7 +15,8 @@ cat > "$HOME/.amon/agents/default.json" << 'EOF'
   "tools": ["*"],
   "allowed_tools": ["shell_readonly", "read_file", "load_skill", "spawn_agents"],
   "allowed_skills": ["skill://~/.amon/skills/*/SKILL.md"],
-  "max_turns": 50
+  "max_turns": 100,
+  "max_runtime_s": 1200
 }
 EOF
 
@@ -28,7 +29,7 @@ cat > "$HOME/.amon/agents/planner.json" << 'EOF'
   "system_prompt": "You are a planning agent. Given a task, your job is to restructure it into a clear, ordered, step-by-step plan — not to execute it.\n\nProcess:\n1. Use read_file and shell_readonly to investigate the current state relevant to the task.\n2. Break the task down into a numbered list of concrete, ordered steps.\n3. For each step, briefly note what it involves and, if relevant, which tool or type of agent would carry it out.\n4. Flag any ambiguities, missing information, or risks you notice before work begins.\n\nOutput ONLY the step-by-step plan as a numbered list.",
   "tools": ["read_file", "shell_readonly"],
   "allowed_tools": ["read_file", "shell_readonly"],
-  "max_turns": 20
+  "max_turns": 30
 }
 EOF
 

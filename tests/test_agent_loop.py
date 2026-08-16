@@ -534,6 +534,76 @@ class TestHookIntegration:
         assert result.ok
 
 
+# -------------------------------------------------------- bad tool calls
+
+
+class TestBadToolCalls:
+    """Unknown names / malformed args must not kill the loop."""
+
+    def test_unknown_tool_continues_and_reports(self):
+        called = []
+
+        def tool(**kwargs):
+            called.append(kwargs)
+            return "ran"
+
+        post_hooks = []
+
+        def fake_hook(**kwargs):
+            if kwargs.get("hook_event_name") == HookEventName.POST_TOOL_USE:
+                post_hooks.append(kwargs)
+            return ("", None)
+
+        with patch("scripts.amon.agent_loop.run_hook_event", side_effect=fake_hook):
+            result, llm = _run(
+                [
+                    _response(tool_calls=_tool_call(name="write")),
+                    _response(content="recovered"),
+                ],
+                registry=_registry(tool, name="echo"),
+            )
+        assert called == []
+        assert result.ok
+        assert result.result == "recovered"
+        assert llm.call_count == 2
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "Unknown tool 'write'" in tool_msg["content"]
+        assert "echo" in tool_msg["content"]
+        assert len(post_hooks) == 1
+
+    def test_malformed_args_json_continues_and_reports(self):
+        called = []
+
+        def tool(**kwargs):
+            called.append(kwargs)
+            return "ran"
+
+        post_hooks = []
+
+        def fake_hook(**kwargs):
+            if kwargs.get("hook_event_name") == HookEventName.POST_TOOL_USE:
+                post_hooks.append(kwargs)
+            return ("", None)
+
+        with patch("scripts.amon.agent_loop.run_hook_event", side_effect=fake_hook):
+            result, llm = _run(
+                [
+                    _response(tool_calls=_tool_call(args="{not json")),
+                    _response(content="recovered"),
+                ],
+                registry=_registry(tool),
+            )
+        assert called == []
+        assert result.ok
+        assert result.result == "recovered"
+        assert llm.call_count == 2
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "Invalid arguments JSON" in tool_msg["content"]
+        assert len(post_hooks) == 1
+
+
 # ------------------------------------------------------------ prompt template
 
 
@@ -578,3 +648,41 @@ class TestModelOverride:
     def test_no_model_forwards_none_for_the_default(self):
         _, llm = _run([_response(content="hi")])
         assert llm.call_args_list[0].kwargs["model"] is None
+
+
+class TestMaxToolOutputChars:
+    def test_raised_cap_keeps_output_global_would_cut(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("scripts.amon.agent_loop.MAX_TOOL_OUTPUT_CHARS", 50)
+        monkeypatch.setattr("scripts.amon.agent_loop.TOOL_OUTPUT_DIR", tmp_path)
+
+        def tool(**kwargs):
+            return "x" * 200
+
+        result, llm = _run(
+            [_response(tool_calls=_tool_call()), _response(content="done")],
+            registry=_registry(tool),
+            max_tool_output_chars=500,
+        )
+        assert result.ok
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert tool_msg["content"] == "x" * 200
+        assert "truncated" not in tool_msg["content"]
+
+    def test_default_cap_still_truncates(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("scripts.amon.agent_loop.MAX_TOOL_OUTPUT_CHARS", 50)
+        monkeypatch.setattr("scripts.amon.agent_loop.TOOL_OUTPUT_DIR", tmp_path)
+
+        def tool(**kwargs):
+            return "y" * 200
+
+        _, llm = _run(
+            [_response(tool_calls=_tool_call()), _response(content="done")],
+            registry=_registry(tool),
+        )
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "truncated" in tool_msg["content"]
+        # Notice text can exceed the raw cap; the body must not be the full dump.
+        assert tool_msg["content"] != "y" * 200
+        assert tool_msg["content"].count("y") < 200
