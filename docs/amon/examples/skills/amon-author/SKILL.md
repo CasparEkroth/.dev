@@ -44,8 +44,14 @@ rather than writing JSON from scratch.
 6. If `allowed_skills` is set, confirm the glob resolves to at least the
    intended `SKILL.md` file(s)
 7. `max_turns` must be `> 0`
-8. Write valid JSON — no trailing commas, no comments
-9. Restart amon (or re-run headless) so `READY_AGENTS` reloads
+8. Optional knobs worth setting deliberately: `model`, `max_runtime_s`,
+   `force_first_tool`, `system_prompt_template`, `max_tool_output_chars`
+   (see `references/agent-schema.md`)
+9. Write valid JSON — no trailing commas, no comments
+10. Restart amon (or re-run headless) so `READY_AGENTS` reloads
+11. Headless overrides (not agent JSON): `--session-id`, `--model`,
+    `--max-turns`, `--stream`, plus env `AMON_SESSIONS_DIR` /
+    `AMON_TOOL_OUTPUT_DIR` / `AMON_STREAM` — see `references/cli-flags.md`
 
 ## Create a hook
 

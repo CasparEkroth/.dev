@@ -36,6 +36,7 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
   "force_first_tool": false,
   "max_runtime_s": 900,
   "model": null,
+  "max_tool_output_chars": null,
   "mcp_servers": {}
 }
 ```
@@ -54,8 +55,9 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
 | `max_turns` | no | Max agent loop turns (default `DEFAULT_MAX_TURNS` = 30, must be `> 0`) |
 | `force_first_tool` | no | Require a tool call on the first turn (default `false`, so an agent can open with a clarifying question) |
 | `max_runtime_s` | no | Wall-clock budget in seconds (default none). On expiry the run stops between turns and returns its partial result |
-| `model` | no | Model id for this agent (default: `settings.LLM_MODEL`) |
+| `model` | no | Model id for this agent (default: `settings.LLM_MODEL`). Headless/`spawn_agents` can override per run via `--model` / job `model` |
 | `system_prompt_template` | no | Overrides how the system prompt is assembled. Placeholders: `{prompt}` (this agent's `system_prompt`), `{workspace}` (cwd), `{skills}` (the catalog). Unused placeholders are fine; literal braces must be doubled, and an unknown placeholder raises at run start. Supply a template without the `load_skill` sentence to drop the skill mandate — e.g. when the agent's first tool call must be something else |
+| `max_tool_output_chars` | no | Per-agent ceiling for tool-result truncation/spill. Default `null` uses global `MAX_TOOL_OUTPUT_CHARS` (20_000) |
 | `mcp_servers` | no | **Stub** — accepted and validated, but no servers are started and no tools registered yet |
 
 ### `tools` vs `allowed_tools`
@@ -87,14 +89,18 @@ Notable tool behaviour:
   `path` does not exist, `old` is empty and `new` holds the content. For an
   existing file an empty `old` appends; otherwise the first occurrence of
   `old` is replaced.
-- Every tool result is capped at `MAX_TOOL_OUTPUT_CHARS` before it enters the
-  conversation. Longer output keeps its head and tail, and the full text is
-  written to `TOOL_OUTPUT_DIR` with the path named in the inline marker, so the
-  agent can read it back with `read_file`.
+- Every tool result is capped at `MAX_TOOL_OUTPUT_CHARS` (or the agent's
+  `max_tool_output_chars` when set) before it enters the conversation. Longer
+  output keeps its head and tail, and the full text is written to
+  `TOOL_OUTPUT_DIR` (`AMON_TOOL_OUTPUT_DIR` overrides the path) with the path
+  named in the inline marker, so the agent can read it back with `read_file`.
 - `spawn_agents` runs each job as a child `amon --headless --json` process, at
   most `max_parallel` (default `DEFAULT_MAX_PARALLEL`) at a time. A job past
-  `timeout_s` is killed. Children are separate processes, so one cannot corrupt
-  shared state or outlive the parent.
+  `timeout_s` is killed. Optional job fields: `save_session`, `session_id`,
+  `model`, `max_turns`. Optional top-level `output` writes the full result list
+  JSON as a harness checkpoint even when some jobs fail. Children are separate
+  processes, so one cannot corrupt shared state or outlive the parent.
+- Session files live under `SESSIONS_DIR` (`AMON_SESSIONS_DIR` overrides).
 - A run compacts its own history when the prompt crosses `COMPACT_AT_TOKENS`
   (75% of `BASE_CONTEXT_WINDOW`): everything before the last tool-calling turn
   is summarized by the same code path as `/compact`, so a long run keeps going

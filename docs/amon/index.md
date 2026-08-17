@@ -14,6 +14,11 @@ amon --headless "summarize the repo structure" --agent default
 # headless JSON (pipe-clean stdout)
 amon --headless "summarize the repo structure" --json
 
+# headless with session id, model/turns override, stderr tool stream
+amon --headless "summarize the repo structure" --json \
+  --session-id 13e5ab9e-ab29-40e3-ade9-e4b316ffdf28 \
+  --max-turns 20 --stream
+
 # resume / manage sessions
 amon --list-sessions
 amon --list-agents
@@ -27,11 +32,12 @@ Default install writes agents and the sample skill via:
 scripts/amon/config/setup/install
 ```
 
-That creates:
+That creates/refreshes:
 
 - `~/.amon/agents/default.json`
 - `~/.amon/agents/planner.json`
 - `~/.amon/skills/python-validate/`
+- `~/.amon/skills/amon-author/`
 - `~/.amon/hooks/log.sh`
 
 That's enough to start using amon. Everything below is for customizing it

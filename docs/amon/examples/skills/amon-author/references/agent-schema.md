@@ -26,8 +26,9 @@ Map key = filename stem. Higher priority overwrites lower on conflict.
 | `max_turns` | int | no | `DEFAULT_MAX_TURNS` (30) | must be `> 0` |
 | `force_first_tool` | bool | no | `false` | Require a tool call on turn 0; off means the agent may open with a question |
 | `max_runtime_s` | float | no | `null` | Wall-clock budget; the run stops between turns and keeps its partial result |
-| `model` | string | no | `null` | Model id for this agent; falls back to `settings.LLM_MODEL` |
+| `model` | string | no | `null` | Model id for this agent; falls back to `settings.LLM_MODEL`. Overridable per headless run via `--model` / job `model` |
 | `system_prompt_template` | string | no | `null` | Overrides prompt assembly; placeholders `{prompt}`, `{workspace}`, `{skills}`. Double literal braces; unknown placeholders raise at run start |
+| `max_tool_output_chars` | int | no | `null` | Per-agent ceiling for tool results before spill/truncate; `null` keeps global `MAX_TOOL_OUTPUT_CHARS` (20_000) |
 | `mcp_servers` | object | no | `{}` | **STUB** — validated and ignored until MCP support lands |
 
 ## `mcp_servers` (stub)
@@ -57,6 +58,12 @@ From `scripts/amon/tools/registry.py` (may grow):
 - `write_file`
 - `load_skill`
 - `spawn_agents`
+
+### `spawn_agents` job keys (tool args, not agent JSON)
+
+Each job: `agent`, `task` (required); optional `save_session`, `session_id`,
+`model`, `max_turns`. Top-level tool args: `max_parallel`, `timeout_s`, `output`
+(checkpoint path). See `references/cli-flags.md`.
 
 ## Minimal valid example
 

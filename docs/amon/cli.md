@@ -24,6 +24,9 @@ amon --delete-session 13e5ab9e-ab29-40e3-ade9-e4b316ffdf28
 amon --keep-N-sessions 5
 amon --headless "list python packages in this repo" --agent default
 amon --headless "list python packages in this repo" --json
+amon --headless "…" --json --session-id 13e5ab9e-ab29-40e3-ade9-e4b316ffdf28
+amon --headless "…" --json --model gpt-x --max-turns 20
+amon --headless "…" --json --stream   # tool events on stderr
 ```
 
 ## Flags
@@ -42,6 +45,10 @@ Full table (exit behavior, types, defaults): [amon-author reference](examples/sk
 | `--headless INPUT` | Non-interactive single prompt |
 | `--json` | Headless only: print the result as JSON on stdout (pipe-clean). Errors if used without `--headless` |
 | `--save-session` | Headless only: save the session (see below) |
+| `--session-id UUID` | Headless only: use/resume this session id |
+| `--model NAME` | Headless only: override agent model for this run |
+| `--max-turns N` | Headless only: override agent max turns for this run |
+| `--stream` | Headless only: stream tool calls/results to stderr (`AMON_STREAM=1`) |
 
 Session saving differs by mode:
 
@@ -49,6 +56,26 @@ Session saving differs by mode:
 - **Headless CLI**: does **not** save by default. Pass `--save-session` to persist.
 - **`spawn_agents` (API/tool)**: also defaults `save_session=false` per job; set
   `save_session: true` on a job to persist.
+
+Headless per-run overrides (CLI flags map 1:1 onto the job dict / `spawn_agents`
+job fields):
+
+- `--session-id` → `session_id` (resume transcript if present)
+- `--model` → `model`
+- `--max-turns` → `max_turns`
+- `--stream` sets env `AMON_STREAM=1` so tool events go to stderr via
+  `terminal.stream_action_stderr` (stdout stays clean with `--json`)
+
+`spawn_agents` also accepts top-level `output` (checkpoint JSON path),
+`max_parallel`, and `timeout_s`. Job fields: `save_session`, `session_id`,
+`model`, `max_turns`.
+
+Runtime directories (set **before** process start; bound at `config` import):
+
+| Env | Default |
+|-----|---------|
+| `AMON_SESSIONS_DIR` | `scripts/amon/config/sessions/` |
+| `AMON_TOOL_OUTPUT_DIR` | `scripts/amon/config/tool_output/` |
 
 ## Interactive slash commands
 
@@ -78,8 +105,10 @@ Unknown `/…` commands print a dim “not a command” message.
 
 ```text
 amon --headless TASK --agent NAME [--json] [--save-session]
-  → run_jobs([{agent: NAME, task: TASK, save_session: …}])   # in THIS process
-  → Agent.run_task (headless=True)
+                 [--session-id UUID] [--model M] [--max-turns N] [--stream]
+  → optional: AMON_STREAM=1 when --stream
+  → run_jobs([{agent, task, save_session, session_id?, model?, max_turns?}])  # THIS process
+  → Agent.run_task (headless=True; streams to stderr if AMON_STREAM)
   → print result (rich panels) or JSON if --json
 ```
 
