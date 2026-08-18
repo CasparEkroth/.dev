@@ -74,3 +74,93 @@ class TestShellReadonly:
 
     def test_has_no_shell_escape_hatch(self):
         assert "shell" not in inspect.signature(shell_readonly).parameters
+
+    def test_whitelist_still_applies_when_denied_commands_empty(self):
+        # Existing behaviour must not regress when agent guards are at defaults.
+        with pytest.raises(ValueError, match="not allowed"):
+            shell_readonly(["rm", "-rf", "x"], denied_commands=[])
+
+
+class TestShellPathAndCommandGuards:
+    def test_run_shell_denies_cwd_outside_allow(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        outside = tmp_path / "nope"
+        outside.mkdir()
+        with pytest.raises(PermissionError, match="allow_paths"):
+            run_shell(["echo", "hi"], cwd=str(outside), allow_paths=[str(allowed / "**")])
+
+    def test_run_shell_allows_cwd_inside_allow(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        out = run_shell(["echo", "hi"], cwd=str(allowed), allow_paths=[str(allowed / "**")])
+        assert out.strip() == "hi"
+
+    def test_run_shell_deny_paths_on_cwd(self, tmp_path):
+        banned = tmp_path / "banned"
+        banned.mkdir()
+        with pytest.raises(PermissionError, match="deny_paths"):
+            run_shell(["echo", "x"], cwd=str(banned), deny_paths=[str(banned / "**")])
+
+    def test_denied_commands_blocks_argv(self):
+        with pytest.raises(PermissionError, match="denied_commands"):
+            run_shell(["rm", "-rf", "x"], denied_commands=["rm"])
+
+    def test_denied_commands_blocks_shell_string_first_token(self):
+        with pytest.raises(PermissionError, match="denied_commands"):
+            run_shell("rm -rf x", denied_commands=["rm"])
+
+    def test_denied_commands_blocks_chained_shell_string(self):
+        # A bare first-token check would miss the rm after &&.
+        with pytest.raises(PermissionError, match="denied_commands"):
+            run_shell("cd /tmp && rm -rf x", denied_commands=["rm"])
+
+    def test_denied_commands_blocks_piped_shell_string(self):
+        with pytest.raises(PermissionError, match="denied_commands"):
+            run_shell("echo hi | curl http://example.com", denied_commands=["curl"])
+
+    def test_denied_commands_blocks_semicolon_chain(self):
+        with pytest.raises(PermissionError, match="denied_commands"):
+            run_shell("echo hi; sudo reboot", denied_commands=["sudo"])
+
+    def test_allowed_command_still_runs(self):
+        assert run_shell(["echo", "ok"], denied_commands=["rm", "curl"]).strip() == "ok"
+
+    def test_shell_readonly_layers_denied_commands(self, tmp_path):
+        # ls is whitelisted, but denied_commands still blocks it when configured.
+        with pytest.raises(PermissionError, match="denied_commands"):
+            shell_readonly(["ls"], cwd=str(tmp_path), denied_commands=["ls"])
+
+    def test_shell_readonly_layers_cwd_allow(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        outside = tmp_path / "nope"
+        outside.mkdir()
+        with pytest.raises(PermissionError, match="allow_paths"):
+            shell_readonly(
+                ["ls"], cwd=str(outside), allow_paths=[str(allowed / "**")]
+            )
+
+    def test_no_guards_default_matches_today(self, tmp_path):
+        (tmp_path / "m.txt").write_text("x")
+        assert "m.txt" in run_shell(["ls"], cwd=str(tmp_path))
+        assert "m.txt" in shell_readonly(["ls"], cwd=str(tmp_path))
+
+
+class TestCommandNames:
+    def test_argv_uses_basename(self):
+        from shared.path_guard import command_names
+
+        assert command_names(["/bin/rm", "-rf", "x"]) == ["rm"]
+
+    def test_shell_string_scans_separators(self):
+        from shared.path_guard import command_names
+
+        assert command_names("cd /tmp && rm -rf x") == ["cd", "rm"]
+        assert command_names("echo a | curl b") == ["echo", "curl"]
+        assert command_names("true; sudo -i") == ["true", "sudo"]
+
+    def test_env_assignment_skipped(self):
+        from shared.path_guard import command_names
+
+        assert command_names("FOO=1 BAR=2 rm -rf x") == ["rm"]

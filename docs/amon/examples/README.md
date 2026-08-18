@@ -7,6 +7,7 @@ uses them.
 |------|------|
 | `minimal-agent.json` | Smallest useful read-only agent |
 | `readonly-planner.json` | Planner-style agent (mirrors install default) |
+| `path-restricted-agent.json` | Repo-scoped allow/deny paths + denied shell commands |
 | `agent-with-hooks.json` | Full tools + all four hook events |
 | `hooks/log.sh` | Bash lifecycle logger |
 | `hooks/log.py` | Python lifecycle logger |

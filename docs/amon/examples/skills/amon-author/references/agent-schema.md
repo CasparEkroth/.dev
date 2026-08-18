@@ -30,6 +30,19 @@ Map key = filename stem. Higher priority overwrites lower on conflict.
 | `system_prompt_template` | string | no | `null` | Overrides prompt assembly; placeholders `{prompt}`, `{workspace}`, `{skills}`. Double literal braces; unknown placeholders raise at run start |
 | `max_tool_output_chars` | int | no | `null` | Per-agent ceiling for tool results before spill/truncate; `null` keeps global `MAX_TOOL_OUTPUT_CHARS` (20_000) |
 | `mcp_servers` | object | no | `{}` | **STUB** — validated and ignored until MCP support lands |
+| `allow_paths` | string[] | no | `[]` | Glob patterns; empty = unrestricted (unless denied). Matched after resolve |
+| `deny_paths` | string[] | no | `[]` | Glob patterns; deny always wins over allow |
+| `denied_commands` | string[] | no | `[]` | Command names blocked for `shell` / `shell_readonly` (command-position scan) |
+
+### Path / command restriction notes
+
+- Server-side only — bound via `functools.partial` in `get_registry`; **not** in
+  tool schemas.
+- Path rule: permitted iff not denied AND (allow empty OR allow-matched).
+- `read_file` / `write_file`: hard path boundary.
+- `shell` / `shell_readonly`: only `cwd` + command name(s). A permitted binary
+  can still touch paths outside the allow tree — this is a guardrail, not a
+  sandbox. See `docs/amon/agent-config.md`.
 
 ## `mcp_servers` (stub)
 

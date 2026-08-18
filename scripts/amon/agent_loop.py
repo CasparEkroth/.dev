@@ -204,13 +204,18 @@ def run_agent(
     active_session_id = session_id
 
     def _persist(usage_dict: dict) -> None:
-        nonlocal active_session_id
+        nonlocal active_session_id, new_messages
         if not save_session_:
             return
         active_session_id = save_session(new_messages, session_id=active_session_id)
         if active_session_id:
             # Context size is the latest prompt window, not the run sum.
             save_context_tokens(active_session_id, usage_dict.get("prompt_tokens", 0))
+        # Rebind (don't mutate) so the list just handed to save_session is
+        # left intact for the caller; safe to call _persist repeatedly (e.g.
+        # before a blocking confirm, then again at the end) without
+        # re-appending the same messages.
+        new_messages = []
 
     def _finish(
         *,
@@ -323,6 +328,11 @@ def run_agent(
                 error=None,
                 turns=turn + 1,
             )
+
+        # Flush before any tool needs confirmation: a confirm prompt can
+        # block indefinitely (or hang the terminal), and the user's turn
+        # so far must survive a Ctrl+C out of that wait.
+        _persist(last_usage)
 
         for call in tool_calls:
             name = call["function"]["name"]

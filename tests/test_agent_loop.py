@@ -65,6 +65,48 @@ def _run(responses, registry=None, **kwargs):
 # ---------------------------------------------------------------- truncation
 
 
+class TestPathGuardWiring:
+    def test_denied_path_surfaces_as_tool_error(self, tmp_path):
+        """An agent configured with deny_paths gets a blocked tool call."""
+        import json
+        from functools import partial
+
+        from shared.file_handler import read_file
+
+        secret = tmp_path / ".env"
+        secret.write_text("SECRET=1\n")
+
+        guarded = partial(
+            read_file,
+            allow_paths=[str(tmp_path / "**")],
+            deny_paths=["**/.env"],
+        )
+        registry = _registry(guarded, name="read_file")
+
+        responses = [
+            _response(
+                tool_calls=_tool_call(
+                    name="read_file",
+                    args=json.dumps({"path": str(secret)}),
+                    call_id="c1",
+                )
+            ),
+            _response(content="blocked as expected"),
+        ]
+        result, llm = _run(responses, registry=registry)
+        assert result.ok is True
+        assert result.result == "blocked as expected"
+        assert result.tools_used == ["read_file"]
+
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "Error:" in tool_msg["content"]
+        assert "PermissionError" in tool_msg["content"] or "deny_paths" in tool_msg[
+            "content"
+        ]
+        assert "SECRET=1" not in tool_msg["content"]
+
+
 class TestTruncateToolOutput:
     def test_short_output_is_unchanged(self, tmp_path):
         assert truncate_tool_output("small", limit=100, spill_dir=tmp_path) == "small"

@@ -35,6 +35,12 @@ class Agent(BaseModel):
     max_tool_output_chars: int | None = None
     #: TODO: accepted and validated, but no server is started yet.
     mcp_servers: dict[str, dict] = Field(default_factory=dict)
+    #: Glob patterns of paths tools may touch. Empty = unrestricted (unless denied).
+    allow_paths: list[str] = Field(default_factory=list)
+    #: Glob patterns of paths tools must not touch. Deny always wins over allow.
+    deny_paths: list[str] = Field(default_factory=list)
+    #: Literal command names blocked for shell / shell_readonly (command position).
+    denied_commands: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -98,7 +104,11 @@ class Agent(BaseModel):
             system_prompt=self.system_prompt,
             user_input=task,
             tool_registry=get_registry(
-                tools=self.tools, allowed_tools=self.allowed_tools
+                tools=self.tools,
+                allowed_tools=self.allowed_tools,
+                allow_paths=self.allow_paths,
+                deny_paths=self.deny_paths,
+                denied_commands=self.denied_commands,
             ),
             skill_catalog=catalog_for_agent(self.allowed_skills),
             headless=True,

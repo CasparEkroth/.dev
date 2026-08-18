@@ -5,6 +5,11 @@ import sys
 import time
 from uuid import UUID
 
+try:
+    import termios
+except ImportError:  # pragma: no cover - POSIX only
+    termios = None
+
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -237,8 +242,36 @@ def _format_write(args: dict | list | None) -> str:
     return "\n\n".join(parts) if parts else _format_args(args)
 
 
+def _restore_echo() -> None:
+    """Force local echo + canonical mode back on before a plain input(),
+    and discard any stale bytes already queued on stdin.
+
+    prompt_toolkit's PromptSession (the main "> " prompt) puts the tty in
+    raw/no-echo mode while it owns input, and doesn't always restore it on
+    an abnormal exit (e.g. Ctrl+C during the CPR hang) — that's the masked
+    "password prompt" look. Worse, an unanswered cursor-position query
+    (\x1b[6n) can leave the terminal's reply (\x1b[<row>;<col>R) sitting
+    unread in the input queue; since it has no newline, it silently
+    prepends itself to the next line you type, so a clean "y" arrives as
+    e.g. "\x1b[24;5Ry" and never matches. TCIFLUSH drops that stale input.
+    """
+    if termios is None or not sys.stdin.isatty():
+        return
+    try:
+        fd = sys.stdin.fileno()
+        attrs = termios.tcgetattr(fd)
+        attrs[3] |= termios.ECHO | termios.ICANON
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        termios.tcflush(fd, termios.TCIFLUSH)
+    except termios.error:
+        pass
+
+
 def confirm_tool(name: str, args: dict) -> bool:
-    # Pause Live so questionary and the confirm panel own the terminal cleanly.
+    # Pause Live so the confirm panel owns the terminal cleanly.
+    # Plain input() here, not questionary/prompt_toolkit: prompt_toolkit's
+    # cursor-position (CPR) handshake can race with Live's just-stopped
+    # render thread and leave the tty unable to register keystrokes.
     if name == "write_file":
         formatted = f"[bold yellow]{name}[/bold yellow]\n{_format_write(args)}"
     else:
@@ -253,7 +286,9 @@ def confirm_tool(name: str, args: dict) -> bool:
                 border_style="yellow",
             )
         )
-        return bool(questionary.confirm("Allow?", default=False).ask())
+        _restore_echo()
+        answer = input("Allow? [y/N]: ").strip().lower()
+        return answer == "y"
 
 
 def stream_action(event: str, data: dict, *, console: Console | None = None) -> None:

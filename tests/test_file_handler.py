@@ -214,5 +214,98 @@ class TestReadFile(unittest.TestCase):
         self.assertEqual(result["content"], ["line2", "line3"])
 
 
+class TestPathGuards(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.allowed = self.root / "allowed"
+        self.allowed.mkdir()
+        self.secret = self.root / "secret.txt"
+        self.secret.write_text("top-secret\n")
+        self.ok_file = self.allowed / "ok.txt"
+        self.ok_file.write_text("safe\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_no_restrictions_behaves_as_before(self):
+        result = read_file(str(self.secret))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["content"], ["top-secret"])
+
+    def test_empty_allow_paths_is_unrestricted(self):
+        result = read_file(str(self.secret), allow_paths=[], deny_paths=[])
+        self.assertTrue(result["ok"])
+
+    def test_deny_blocks_read(self):
+        with self.assertRaises(PermissionError) as ctx:
+            read_file(str(self.secret), deny_paths=[str(self.root / "secret.txt")])
+        self.assertIn("deny_paths", str(ctx.exception))
+        self.assertIn("secret.txt", str(ctx.exception))
+
+    def test_deny_blocks_write(self):
+        with self.assertRaises(PermissionError):
+            write_file(
+                [{"path": str(self.secret), "old": "", "new": "x"}],
+                deny_paths=[str(self.root / "**")],
+            )
+        self.assertEqual(self.secret.read_text(), "top-secret\n")
+
+    def test_allow_list_blocks_outside(self):
+        with self.assertRaises(PermissionError) as ctx:
+            read_file(
+                str(self.secret),
+                allow_paths=[str(self.allowed / "**")],
+            )
+        self.assertIn("allow_paths", str(ctx.exception))
+
+    def test_allow_list_permits_inside(self):
+        result = read_file(
+            str(self.ok_file),
+            allow_paths=[str(self.allowed / "**")],
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["content"], ["safe"])
+
+    def test_deny_overrides_allow(self):
+        nested = self.allowed / ".env"
+        nested.write_text("KEY=1\n")
+        with self.assertRaises(PermissionError) as ctx:
+            read_file(
+                str(nested),
+                allow_paths=[str(self.allowed / "**")],
+                deny_paths=["**/.env"],
+            )
+        self.assertIn("deny_paths", str(ctx.exception))
+
+    def test_dotdot_traversal_out_of_allow_is_caught(self):
+        # Raw path looks inside allowed/, but resolves to secret outside it.
+        sneaky = str(self.allowed / ".." / "secret.txt")
+        with self.assertRaises(PermissionError):
+            read_file(sneaky, allow_paths=[str(self.allowed / "**")])
+
+    def test_symlink_pointing_outside_allow_is_caught(self):
+        link = self.allowed / "escape"
+        try:
+            link.symlink_to(self.secret)
+        except OSError:
+            self.skipTest("symlinks not supported here")
+        with self.assertRaises(PermissionError):
+            read_file(str(link), allow_paths=[str(self.allowed / "**")])
+
+    def test_write_batch_checks_every_path_before_any_write(self):
+        target = self.allowed / "a.txt"
+        blocked = self.root / "nope.txt"
+        with self.assertRaises(PermissionError):
+            write_file(
+                [
+                    {"path": str(target), "old": "", "new": "would-write"},
+                    {"path": str(blocked), "old": "", "new": "blocked"},
+                ],
+                allow_paths=[str(self.allowed / "**")],
+            )
+        self.assertFalse(target.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

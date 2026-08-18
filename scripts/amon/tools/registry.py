@@ -1,5 +1,6 @@
 import asyncio
 import json
+from functools import partial
 from typing import Literal
 
 from config import DEFAULT_MAX_PARALLEL, DEFAULT_SHELL_TIMEOUT
@@ -7,6 +8,12 @@ from scripts.amon.tools.agent import load_ready_agents
 from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
 from scripts.amon.tools.skills import load_skill
+
+# Tools that accept server-side path/command guards (not model-visible params).
+_PATH_GUARDED_TOOLS = frozenset(
+    {"read_file", "write_file", "shell", "shell_readonly"}
+)
+_COMMAND_GUARDED_TOOLS = frozenset({"shell", "shell_readonly"})
 
 _READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
 
@@ -287,19 +294,43 @@ TOOLS_LIST = Literal.__getitem__(
 
 
 def get_registry(
-    tools: list[str] | None = None, allowed_tools: list[str] | None = None
+    tools: list[str] | None = None,
+    allowed_tools: list[str] | None = None,
+    allow_paths: list[str] | None = None,
+    deny_paths: list[str] | None = None,
+    denied_commands: list[str] | None = None,
 ) -> dict:
-    """Select this agent's tools, with its own confirmation policy.
+    """Select this agent's tools, with its own confirmation and path policy.
 
     Each entry is a copy: writing the flag back onto the shared ``tool_registry``
     made it process-wide, so one permissive agent disabled confirmation for all.
+
+    ``allow_paths`` / ``deny_paths`` / ``denied_commands`` are bound onto the
+    tool callables with ``functools.partial`` — they are never added to the
+    JSON schema the model sees.
     """
     if tools is None:
         return {}
 
     allowed = allowed_tools or []
-    return {
-        k: {**v, "requires_confirmation": k not in allowed}
-        for k, v in tool_registry.items()
-        if k in tools
-    }
+    allow_paths = list(allow_paths or [])
+    deny_paths = list(deny_paths or [])
+    denied_commands = list(denied_commands or [])
+    guard = allow_paths or deny_paths or denied_commands
+
+    out: dict = {}
+    for k, v in tool_registry.items():
+        if k not in tools:
+            continue
+        entry = {**v, "requires_confirmation": k not in allowed}
+        if guard and k in _PATH_GUARDED_TOOLS:
+            kwargs: dict = {}
+            if allow_paths or deny_paths:
+                kwargs["allow_paths"] = allow_paths
+                kwargs["deny_paths"] = deny_paths
+            if denied_commands and k in _COMMAND_GUARDED_TOOLS:
+                kwargs["denied_commands"] = denied_commands
+            if kwargs:
+                entry["fn"] = partial(v["fn"], **kwargs)
+        out[k] = entry
+    return out

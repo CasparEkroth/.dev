@@ -37,7 +37,10 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
   "max_runtime_s": 900,
   "model": null,
   "max_tool_output_chars": null,
-  "mcp_servers": {}
+  "mcp_servers": {},
+  "allow_paths": [],
+  "deny_paths": [],
+  "denied_commands": []
 }
 ```
 
@@ -59,6 +62,38 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
 | `system_prompt_template` | no | Overrides how the system prompt is assembled. Placeholders: `{prompt}` (this agent's `system_prompt`), `{workspace}` (cwd), `{skills}` (the catalog). Unused placeholders are fine; literal braces must be doubled, and an unknown placeholder raises at run start. Supply a template without the `load_skill` sentence to drop the skill mandate — e.g. when the agent's first tool call must be something else |
 | `max_tool_output_chars` | no | Per-agent ceiling for tool-result truncation/spill. Default `null` uses global `MAX_TOOL_OUTPUT_CHARS` (20_000) |
 | `mcp_servers` | no | **Stub** — accepted and validated, but no servers are started and no tools registered yet |
+| `allow_paths` | no | Glob patterns of paths tools may touch. Empty (default) = unrestricted unless denied. Matched after `~` expansion and symlink/`..` resolution |
+| `deny_paths` | no | Glob patterns of paths tools must not touch. Empty (default) = nothing denied. **Deny always wins over allow** |
+| `denied_commands` | no | Literal command names blocked for `shell` / `shell_readonly` (checked in command position, including after `&&`/`;`/`|` in shell strings). Empty (default) = no extra restriction |
+
+### Path / command restriction
+
+Optional server-side guards bound onto tools at registry build time — **never**
+exposed in the tool JSON schema, so the model cannot pass or override them.
+
+A path is permitted iff it is **not** matched by any `deny_paths` pattern, **and**
+(`allow_paths` is empty **or** matched by at least one `allow_paths` pattern).
+Matching uses `fnmatch` against the resolved absolute path
+(`Path(p).expanduser().resolve()`), so `../` traversal and symlinks that escape
+an allowed tree are caught for `read_file` / `write_file`.
+
+Enforcement points:
+
+- `read_file` / `write_file` — every path argument is checked. This is a real
+  boundary: those tools never shell out.
+- `shell` / `shell_readonly` — `cwd` is checked against path rules, and
+  command-position names against `denied_commands`. `shell_readonly` still
+  applies its existing whitelist on top.
+
+**Known limitation (load-bearing):** path/command restriction on `shell` can
+only cover `cwd` and the literal command name(s). A permitted command can still
+read/write paths outside any `allow_paths` tree via absolute paths or `cd`
+inside the same invocation (e.g. `cat /etc/passwd`, `cd / && rm -rf whatever`).
+Full containment needs OS-level sandboxing (container, chroot, bwrap), which is
+out of scope. Treat `allow_paths` + `denied_commands` as a **guardrail against
+accidental damage**, not a security sandbox for `shell`.
+
+Example: [examples/path-restricted-agent.json](examples/path-restricted-agent.json).
 
 ### `tools` vs `allowed_tools`
 
@@ -122,6 +157,7 @@ cp ~/.amon/agents/default.json .amon/agents/default.json
 - [examples/minimal-agent.json](examples/minimal-agent.json)
 - [examples/agent-with-hooks.json](examples/agent-with-hooks.json)
 - [examples/readonly-planner.json](examples/readonly-planner.json)
+- [examples/path-restricted-agent.json](examples/path-restricted-agent.json)
 
 Ship/install defaults live in `scripts/amon/config/setup/install`.
 

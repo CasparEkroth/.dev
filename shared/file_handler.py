@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
 
+from shared.path_guard import check_path_access
+
 
 def scan_folder(
     cwd: str | Path,
@@ -43,7 +45,14 @@ def read_files(paths: list[Path]) -> list[dict]:
     return collection
 
 
-def read_file(path: str, start_line: int = None, end_line: int = None) -> dict:
+def read_file(
+    path: str,
+    start_line: int = None,
+    end_line: int = None,
+    allow_paths: list[str] | None = None,
+    deny_paths: list[str] | None = None,
+) -> dict:
+    check_path_access(path, allow_paths=allow_paths, deny_paths=deny_paths)
     abspath = os.path.abspath(path)
     with open(abspath, "r") as f:
         content = f.read()
@@ -63,12 +72,23 @@ def read_file(path: str, start_line: int = None, end_line: int = None) -> dict:
     }
 
 
-def write_file(content: list[dict]) -> str:
+def write_file(
+    content: list[dict],
+    allow_paths: list[str] | None = None,
+    deny_paths: list[str] | None = None,
+) -> str:
     """Apply a batch of ``{"path", "old", "new"}`` edits, one status line each.
 
     Empty ``old`` appends, or creates the file when it does not exist yet;
     otherwise the first occurrence of ``old`` is replaced.
     """
+    # Pre-check every path so a mid-batch deny cannot leave partial writes.
+    if allow_paths or deny_paths:
+        for section in content:
+            raw = section.get("path") or ""
+            if raw:
+                check_path_access(raw, allow_paths=allow_paths, deny_paths=deny_paths)
+
     results = []
     for section in content:
         raw_path = section.get("path") or ""

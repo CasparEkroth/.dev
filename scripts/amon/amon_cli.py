@@ -278,7 +278,11 @@ def _run_interactive(args) -> None:
                     system_prompt=agent.system_prompt,
                     user_input=user_input,
                     tool_registry=get_registry(
-                        tools=agent.tools, allowed_tools=agent.allowed_tools
+                        tools=agent.tools,
+                        allowed_tools=agent.allowed_tools,
+                        allow_paths=agent.allow_paths,
+                        deny_paths=agent.deny_paths,
+                        denied_commands=agent.denied_commands,
                     ),
                     skill_catalog=catalog_for_agent(agent.allowed_skills),
                     confirm_fn=terminal.confirm_tool,

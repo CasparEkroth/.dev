@@ -143,6 +143,9 @@ def test_agent_new_field_defaults(tmp_path):
     assert agent.max_runtime_s is None
     assert agent.model is None
     assert agent.mcp_servers == {}
+    assert agent.allow_paths == []
+    assert agent.deny_paths == []
+    assert agent.denied_commands == []
 
 
 def test_run_task_forwards_new_fields():
@@ -220,6 +223,96 @@ def test_get_registry_selection_rules():
     every = get_registry(tools=["shell", "read_file"])
     assert set(every) == {"shell", "read_file"}
     assert all(v["requires_confirmation"] for v in every.values())
+
+
+def test_agent_path_fields_round_trip(tmp_path):
+    config = {
+        "name": "scoped",
+        "description": "scoped",
+        "system_prompt": "hi",
+        "tools": ["read_file", "shell"],
+        "allowed_tools": ["read_file"],
+        "allow_paths": ["/tmp/work/**"],
+        "deny_paths": ["**/.env"],
+        "denied_commands": ["rm", "curl"],
+    }
+    config_file = tmp_path / "scoped.json"
+    config_file.write_text(json.dumps(config))
+
+    agent = Agent.from_file(config_file)
+    assert agent.allow_paths == ["/tmp/work/**"]
+    assert agent.deny_paths == ["**/.env"]
+    assert agent.denied_commands == ["rm", "curl"]
+
+
+def test_get_registry_binds_path_guards_without_schema_leak(tmp_path):
+    from functools import partial
+
+    from scripts.amon.tools.registry import get_registry, tool_registry
+
+    allowed = tmp_path / "ok"
+    allowed.mkdir()
+    (allowed / "f.txt").write_text("hi\n")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope\n")
+
+    reg = get_registry(
+        tools=["read_file", "shell", "load_skill"],
+        allowed_tools=["read_file", "shell", "load_skill"],
+        allow_paths=[str(allowed / "**")],
+        deny_paths=[str(secret)],
+        denied_commands=["rm"],
+    )
+
+    # Guards must not appear in the model-facing schema.
+    for name in ("read_file", "shell"):
+        params = reg[name]["schema"]["function"]["parameters"]["properties"]
+        assert "allow_paths" not in params
+        assert "deny_paths" not in params
+        assert "denied_commands" not in params
+
+    # load_skill is left untouched (no path/command partial).
+    assert reg["load_skill"]["fn"] is tool_registry["load_skill"]["fn"]
+
+    assert isinstance(reg["read_file"]["fn"], partial)
+    assert isinstance(reg["shell"]["fn"], partial)
+
+    ok = reg["read_file"]["fn"](path=str(allowed / "f.txt"))
+    assert ok["ok"] is True
+
+    import pytest
+
+    with pytest.raises(PermissionError):
+        reg["read_file"]["fn"](path=str(secret))
+
+    with pytest.raises(PermissionError, match="denied_commands"):
+        reg["shell"]["fn"](command=["rm", "-rf", "x"], cwd=str(allowed))
+
+
+def test_run_task_forwards_path_guards_to_registry():
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=["read_file"],
+        allowed_tools=["read_file"],
+        allow_paths=["/work/**"],
+        deny_paths=["**/.env"],
+        denied_commands=["sudo"],
+    )
+
+    with (
+        patch("scripts.amon.tools.agent.run_agent") as run,
+        patch("scripts.amon.tools.registry.get_registry") as gr,
+    ):
+        gr.return_value = {}
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+
+    kwargs = gr.call_args.kwargs
+    assert kwargs["allow_paths"] == ["/work/**"]
+    assert kwargs["deny_paths"] == ["**/.env"]
+    assert kwargs["denied_commands"] == ["sudo"]
 
 
 def test_headless_payload_single_and_multi():
