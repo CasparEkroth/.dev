@@ -77,10 +77,12 @@ def write_file(
     allow_paths: list[str] | None = None,
     deny_paths: list[str] | None = None,
 ) -> str:
-    """Apply a batch of ``{"path", "old", "new"}`` edits, one status line each.
+    """Apply a batch of ``{"path", "old", "new", "overwrite"?}`` edits, one status line each.
 
-    Empty ``old`` appends, or creates the file when it does not exist yet;
-    otherwise the first occurrence of ``old`` is replaced.
+    ``overwrite: true`` replaces the whole file with ``new`` (creating it, and
+    any missing parent directories, if it doesn't exist yet) — ``old`` is
+    ignored. Otherwise: empty ``old`` appends, or creates the file when it
+    does not exist yet; otherwise the first occurrence of ``old`` is replaced.
     """
     # Pre-check every path so a mid-batch deny cannot leave partial writes.
     if allow_paths or deny_paths:
@@ -94,10 +96,19 @@ def write_file(
         raw_path = section.get("path") or ""
         old = section.get("old", "")
         new = section.get("new", "")
+        overwrite = bool(section.get("overwrite", False))
         if not raw_path:
             results.append("<no path>: missing 'path', no changes made")
             continue
         path = Path(raw_path)
+
+        if overwrite:
+            existed = path.is_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(new)
+            results.append(f"{path}: {'overwritten' if existed else 'created file'}")
+            continue
+
         # handel old is eampty####
         if not path.is_file():
             if old == "" and new != "":

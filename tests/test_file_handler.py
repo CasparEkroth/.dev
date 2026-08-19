@@ -60,6 +60,39 @@ class TestWriteFile(unittest.TestCase):
         self.assertEqual(target.read_text(), "a = 1\n")
         self.assertIn("search text not found", result)
 
+    def test_overwrite_replaces_entire_existing_file(self):
+        target = self.root / "code.py"
+        target.write_text("a = 1\nb = 2\nc = 3\n")
+        result = write_file(
+            [{"path": str(target), "old": "", "new": "totally new\n", "overwrite": True}]
+        )
+        self.assertEqual(target.read_text(), "totally new\n")
+        self.assertIn("overwritten", result)
+
+    def test_overwrite_creates_missing_file_and_parents(self):
+        target = self.root / "a" / "b" / "new.py"
+        result = write_file(
+            [{"path": str(target), "old": "", "new": "x = 1\n", "overwrite": True}]
+        )
+        self.assertEqual(target.read_text(), "x = 1\n")
+        self.assertIn("created file", result)
+
+    def test_overwrite_ignores_old(self):
+        target = self.root / "code.py"
+        target.write_text("original\n")
+        result = write_file(
+            [
+                {
+                    "path": str(target),
+                    "old": "text not present in file",
+                    "new": "replaced\n",
+                    "overwrite": True,
+                }
+            ]
+        )
+        self.assertEqual(target.read_text(), "replaced\n")
+        self.assertIn("overwritten", result)
+
     def test_batch_reports_one_line_per_section(self):
         created = self.root / "one.txt"
         missing = self.root / "two.txt"

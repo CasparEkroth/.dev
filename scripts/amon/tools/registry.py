@@ -139,7 +139,13 @@ tool_registry = {
                 "description": (
                     "Write to file. An empty 'old' appends, or creates the file "
                     "(with parent directories) when 'path' does not exist; "
-                    "otherwise the first occurrence of 'old' becomes 'new'."
+                    "otherwise the first occurrence of 'old' becomes 'new'. Set "
+                    "'overwrite': true to replace the file's ENTIRE contents with "
+                    "'new' in one call (creating it and any parent directories if "
+                    "needed) — 'old' is ignored. Use overwrite for a new "
+                    "implementation, a full rewrite of a function/file, or any "
+                    "change too large to express as a handful of old/new patches; "
+                    "use old/new for small, surgical edits."
                 ),
                 "parameters": {
                     "type": "object",
@@ -152,16 +158,21 @@ tool_registry = {
                                     "path": {"type": "string"},
                                     "old": {
                                         "type": "string",
-                                        "description": "The old string that gets replaced by the new",
+                                        "description": "The old string that gets replaced by the new. Ignored when 'overwrite' is true.",
                                     },
                                     "new": {
                                         "type": "string",
-                                        "description": "The new string that replaces the old string",
+                                        "description": "The new string that replaces the old string, or the file's full new content when 'overwrite' is true.",
+                                    },
+                                    "overwrite": {
+                                        "type": "boolean",
+                                        "description": "Replace the whole file with 'new' instead of patching. Default false.",
+                                        "default": False,
                                     },
                                 },
                                 "required": ["path", "old", "new"],
                             },
-                            "description": "Items as list, e.g [{'path':'path/file.txt','old':'text that gets replaced', 'new':'text that replaces the old text'},{...}]",
+                            "description": "Items as list, e.g [{'path':'path/file.txt','old':'text that gets replaced', 'new':'text that replaces the old text'},{'path':'path/new_module.py','old':'','new':'<full file content>','overwrite':true}]",
                         },
                     },
                     "required": ["content"],

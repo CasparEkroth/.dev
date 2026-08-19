@@ -123,7 +123,10 @@ Notable tool behaviour:
 - `write_file` creates a file (and any missing parent directories) when the
   `path` does not exist, `old` is empty and `new` holds the content. For an
   existing file an empty `old` appends; otherwise the first occurrence of
-  `old` is replaced.
+  `old` is replaced. Pass `"overwrite": true` on an item to replace the
+  file's entire contents with `new` in one call (creating it and parent
+  directories if needed, `old` ignored) — use this for a full rewrite or a
+  new implementation instead of chaining many small `old`/`new` patches.
 - Every tool result is capped at `MAX_TOOL_OUTPUT_CHARS` (or the agent's
   `max_tool_output_chars` when set) before it enters the conversation. Longer
   output keeps its head and tail, and the full text is written to
