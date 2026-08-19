@@ -101,9 +101,10 @@ class TestPathGuardWiring:
         conversation = llm.call_args_list[1].args[1]
         tool_msg = next(m for m in conversation if m.get("role") == "tool")
         assert "Error:" in tool_msg["content"]
-        assert "PermissionError" in tool_msg["content"] or "deny_paths" in tool_msg[
-            "content"
-        ]
+        assert (
+            "PermissionError" in tool_msg["content"]
+            or "deny_paths" in tool_msg["content"]
+        )
         assert "SECRET=1" not in tool_msg["content"]
 
 

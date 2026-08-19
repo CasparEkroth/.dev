@@ -88,12 +88,16 @@ class TestShellPathAndCommandGuards:
         outside = tmp_path / "nope"
         outside.mkdir()
         with pytest.raises(PermissionError, match="allow_paths"):
-            run_shell(["echo", "hi"], cwd=str(outside), allow_paths=[str(allowed / "**")])
+            run_shell(
+                ["echo", "hi"], cwd=str(outside), allow_paths=[str(allowed / "**")]
+            )
 
     def test_run_shell_allows_cwd_inside_allow(self, tmp_path):
         allowed = tmp_path / "ok"
         allowed.mkdir()
-        out = run_shell(["echo", "hi"], cwd=str(allowed), allow_paths=[str(allowed / "**")])
+        out = run_shell(
+            ["echo", "hi"], cwd=str(allowed), allow_paths=[str(allowed / "**")]
+        )
         assert out.strip() == "hi"
 
     def test_run_shell_deny_paths_on_cwd(self, tmp_path):
@@ -137,9 +141,7 @@ class TestShellPathAndCommandGuards:
         outside = tmp_path / "nope"
         outside.mkdir()
         with pytest.raises(PermissionError, match="allow_paths"):
-            shell_readonly(
-                ["ls"], cwd=str(outside), allow_paths=[str(allowed / "**")]
-            )
+            shell_readonly(["ls"], cwd=str(outside), allow_paths=[str(allowed / "**")])
 
     def test_no_guards_default_matches_today(self, tmp_path):
         (tmp_path / "m.txt").write_text("x")

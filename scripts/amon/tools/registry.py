@@ -10,9 +10,7 @@ from shared.file_handler import read_file, write_file
 from scripts.amon.tools.skills import load_skill
 
 # Tools that accept server-side path/command guards (not model-visible params).
-_PATH_GUARDED_TOOLS = frozenset(
-    {"read_file", "write_file", "shell", "shell_readonly"}
-)
+_PATH_GUARDED_TOOLS = frozenset({"read_file", "write_file", "shell", "shell_readonly"})
 _COMMAND_GUARDED_TOOLS = frozenset({"shell", "shell_readonly"})
 
 _READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
