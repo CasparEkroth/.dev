@@ -70,13 +70,25 @@ From `scripts/amon/tools/registry.py` (may grow):
 - `read_file`
 - `write_file`
 - `load_skill`
-- `spawn_agents`
+- `todo_write`
+- `spawn_agents` (registered after agents load)
+
+### `todo_write` (tool args, not agent JSON)
+
+- Args: `todos: [{content: string, status: "pending"|"in_progress"|"completed"}]`
+- Full-list replace per call; result echoes the rendered checklist
+- Session id bound server-side (not model-visible). With a session id, stored as
+  `{session_id}.todos.json` under `SESSIONS_DIR` — survives `--resume`, cleaned
+  by `remove_session`, shareable with `spawn_agents` children given the same id
+- No session id → per-process in-memory fallback
+- Confirmation follows `allowed_tools` like other tools
 
 ### `spawn_agents` job keys (tool args, not agent JSON)
 
 Each job: `agent`, `task` (required); optional `save_session`, `session_id`,
 `model`, `max_turns`. Top-level tool args: `max_parallel`, `timeout_s`, `output`
-(checkpoint path). See `references/cli-flags.md`.
+(checkpoint path). Same `session_id` shares the todo sidecar across processes.
+See `references/cli-flags.md`.
 
 ## Minimal valid example
 

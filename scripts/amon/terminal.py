@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from pathlib import Path
 import pprint
+import re
 import sys
 import time
 from uuid import UUID
@@ -26,6 +27,7 @@ from prompt_toolkit.styles import Style
 from scripts.amon.memory import load_session
 from scripts.amon.tools.agent import Agent
 from scripts.amon.tools.registry import READY_AGENTS
+from scripts.amon.tools.todo import get_todos, render_todos
 from config import BASE_CONTEXT_WINDOW
 
 console = Console()
@@ -33,24 +35,38 @@ console = Console()
 _stderr_console = Console(file=sys.stderr)
 _live: "Live | None" = None
 
+#: Matches one rendered checklist line, e.g. "◐ [in_progress] write tests"
+#: (see scripts.amon.tools.todo.render_todos) — used to pull just the
+#: checklist lines back out of a todo_write tool result string, which may
+#: also contain validation notes ahead of the rendered list.
+_TODO_LINE_RE = re.compile(r"^[○◐✓] \[(?:pending|in_progress|completed)\] .+$")
+
 
 class StatusFooter:
     def __init__(self, context_limit: int = BASE_CONTEXT_WINDOW):
         self.tokens = 0
         self.context_limit = context_limit
         self.context_current = 0
+        self.todo_lines: list[str] = []
 
     def add_tokens(self, n: int) -> None:
         self.tokens += n
 
-    def reset_footer(self, token: bool = False, context: bool = False) -> None:
+    def reset_footer(
+        self, token: bool = False, context: bool = False, todos: bool = False
+    ) -> None:
         if token:
             self.tokens = 0
         if context:
             self.context_current = 0
+        if todos:
+            self.todo_lines = []
 
     def set_context(self, c: int | str) -> None:
         self.context_current = c
+
+    def set_todo_lines(self, lines: list[str]) -> None:
+        self.todo_lines = lines
 
     def render_html(self) -> HTML:
         if isinstance(self.context_current, str):
@@ -63,9 +79,10 @@ class StatusFooter:
                 if self.context_limit
                 else 0.0
             )
-        return HTML(
-            f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
-        )
+        text = f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
+        if self.todo_lines:
+            text += "\n" + "\n".join(self.todo_lines)
+        return HTML(text)
 
 
 footer = StatusFooter()
@@ -79,7 +96,7 @@ def update_footer(tokens_added: int = 0, context: int | str = 0) -> None:
 
 
 def reste_context() -> None:
-    footer.reset_footer(context=True)
+    footer.reset_footer(context=True, todos=True)
 
 
 def set_context_limit(limit: int) -> None:
@@ -94,6 +111,9 @@ def show_welcome(session_id: UUID) -> None:
             border_style="cyan",
         )
     )
+    existing_todos = get_todos(str(session_id))
+    if existing_todos:
+        footer.set_todo_lines(render_todos(existing_todos).splitlines())
     history = load_session(session_id)
     if history:
         console.print(
@@ -326,6 +346,26 @@ def stream_action(event: str, data: dict, *, console: Console | None = None) -> 
         )
     elif event == "tool_result":
         content = str(data.get("content", ""))
+        name = data.get("name", "tool")
+        if name == "todo_write":
+            # Keep the bottom-toolbar checklist in sync with every call, not
+            # just what's visible in the scrolling panel below.
+            footer.set_todo_lines(
+                [line for line in content.splitlines() if _TODO_LINE_RE.match(line)]
+            )
+            # Escape first: rendered lines contain literal "[in_progress]" etc,
+            # and Rich's console markup would otherwise parse "[...]" as style
+            # tags and silently swallow the status label.
+            from rich.markup import escape
+
+            _print(
+                Panel(
+                    escape(content),
+                    title="[magenta]☑ Checklist[/magenta]",
+                    border_style="magenta",
+                )
+            )
+            return
         max_len = 600
         if len(content) > max_len:
             content = (
@@ -337,7 +377,7 @@ def stream_action(event: str, data: dict, *, console: Console | None = None) -> 
         _print(
             Panel(
                 content,
-                title=f"[dim]← Result from {data.get('name', 'tool')}[/dim]",
+                title=f"[dim]← Result from {name}[/dim]",
                 border_style="dim",
             )
         )

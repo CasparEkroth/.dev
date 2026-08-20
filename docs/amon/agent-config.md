@@ -24,7 +24,7 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
   "description": "Short summary shown in spawn_agents / pickers",
   "system_prompt": "Instructions for the model…",
   "tools": ["*"],
-  "allowed_tools": ["shell_readonly", "read_file", "load_skill", "spawn_agents"],
+  "allowed_tools": ["shell_readonly", "read_file", "load_skill", "spawn_agents", "todo_write"],
   "allowed_skills": ["skill://~/.amon/skills/*/SKILL.md"],
   "hooks": {
     "start": "~/.amon/hooks/log.sh",
@@ -128,13 +128,23 @@ Notable tool behaviour:
   file's entire contents with `new` in one call (creating it and parent
   directories if needed, `old` ignored) — use this for a full rewrite or a
   new implementation instead of chaining many small `old`/`new` patches.
-- `todo_write` sets/replaces the checklist of steps for the current task —
-  each call replaces the entire list, and the result echoes it back
-  rendered so there's no separate read tool. It has no filesystem/shell
-  side effect. Storage is in-memory, per process, keyed by session id (bound
-  server-side via `get_registry`'s `session_id` argument — not a
-  model-visible parameter): it does not survive `--resume` and is not
-  shared with `spawn_agents` children, which run as separate processes.
+- `todo_write` sets/replaces the checklist of steps for the current task.
+  Shape: `todos: [{content, status}]` with `status` in
+  `pending` / `in_progress` / `completed`. Each call replaces the **entire**
+  list (resend items you keep); the result echoes the list rendered so there
+  is no separate read tool. Bad items are skipped with a note rather than
+  failing the whole call. Convention (advisory): at most one `in_progress`
+  item at a time. The current session id is bound **server-side** via
+  `get_registry` (not a model-visible parameter). With a session id, the list
+  is written to `{session_id}.todos.json` under `SESSIONS_DIR` (same dir as
+  the transcript; see `save_todos` / `load_todos` in `memory.py`). That means
+  it **survives `--resume`**, is cleaned up by `remove_session` / `--delete-session`,
+  is excluded from session listings, and is shared with `spawn_agents`
+  children that reuse the same `session_id` (separate processes, same disk
+  sidecar). Headless runs with no session id fall back to a per-process
+  in-memory store. On resume, `run_agent` re-injects any saved checklist into
+  the conversation before the first model call. Confirmation still follows
+  `allowed_tools` like other tools (shipped `default` / `dev` include it).
 - Every tool result is capped at `MAX_TOOL_OUTPUT_CHARS` (or the agent's
   `max_tool_output_chars` when set) before it enters the conversation. Longer
   output keeps its head and tail, and the full text is written to
@@ -145,15 +155,28 @@ Notable tool behaviour:
   `timeout_s` is killed. Optional job fields: `save_session`, `session_id`,
   `model`, `max_turns`. Optional top-level `output` writes the full result list
   JSON as a harness checkpoint even when some jobs fail. Children are separate
-  processes, so one cannot corrupt shared state or outlive the parent.
-- Session files live under `SESSIONS_DIR` (`AMON_SESSIONS_DIR` overrides).
-- A run compacts its own history when the prompt crosses `COMPACT_AT_TOKENS`
-  (75% of `BASE_CONTEXT_WINDOW`): everything before the last tool-calling turn
-  is summarized by the same code path as `/compact`, so a long run keeps going
-  instead of being rejected for exceeding the context window. The session file
-  on disk stays complete. If a model call fails, the history is compacted and
-  the turn retried once; if it fails again the run returns its partial result
-  and error rather than losing everything.
+  processes, so one cannot corrupt shared state or outlive the parent. To share
+  a checklist across parent and child, pass the same `session_id` on the job.
+- Session artifacts live under `SESSIONS_DIR` (`AMON_SESSIONS_DIR` overrides):
+  transcript file `{uuid}`, token meta `{uuid}.meta.json`, and optional todo
+  sidecar `{uuid}.todos.json`.
+- **Prompt compaction**:
+  - **Auto (during a run):** when the last turn's `prompt_tokens` crosses
+    `COMPACT_AT_TOKENS` (75% of `BASE_CONTEXT_WINDOW`), or as a retry after a
+    failed model call. Unfinished tool cycles are stripped first so the model
+    never sees a half tool-call/result pair; everything before the last complete
+    tool-calling turn is LLM-summarized via `compact_conversation`; the complete
+    tail is kept. This only rewrites the in-memory conversation — the session
+    file on disk stays complete.
+  - **Hard trim** fallback (`_force_hard_trim`, keep last ~12 messages plus at
+    most one leading system message) when the summary is unusable or a retry
+    still fails — a long run keeps going instead of dying on context overflow.
+  - If compaction and hard trim cannot recover after a retry, the run returns
+    its partial result and error rather than losing everything.
+  - **Interactive `/compact`:** calls `compact_conversation` on the loaded
+    transcript and **rewrites** the session file with the summary
+    (`override=True`). It does not run the unfinished-tool-cycle strip or hard
+    trim used by auto-compact.
 
 ## Project-local override pattern
 

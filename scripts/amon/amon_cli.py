@@ -304,6 +304,13 @@ def _run_interactive(args) -> None:
                 terminal.console.print("\n[yellow]Interrupted.[/yellow]")
                 continue
 
+            # Clear the live checklist once the task is actually done — a
+            # failed/interrupted run keeps it, since the leftover state (e.g.
+            # what was still 'in_progress') is useful context for why it
+            # stopped there. Only a clean finish resets the footer.
+            if result.ok:
+                terminal.footer.reset_footer(todos=True)
+
             # Streaming already showed content; surface structured failure meta.
             if not result.ok:
                 err = result.error or "Agent run failed."

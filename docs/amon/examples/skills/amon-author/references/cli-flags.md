@@ -66,5 +66,11 @@ Not flags — REPL input:
 - `/exit` | `/quit` | `/q`
 - `/agent`
 - `/sessions`
-- `/new`
-- `/compact`
+- `/new` — new session id; resets token/context footer **and** checklist toolbar
+- `/compact` — LLM-summarize the session transcript and rewrite the session file with the summary (unlike auto-compact during a run, which keeps the on-disk transcript complete)
+
+### Checklist toolbar
+
+`todo_write` results update the bottom footer and a dedicated checklist panel.
+On resume, footer seeds from `{session_id}.todos.json` when present. See
+`docs/amon/cli.md` and `references/paths.md`.

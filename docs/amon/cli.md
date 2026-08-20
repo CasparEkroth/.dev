@@ -72,10 +72,10 @@ job fields):
 
 Runtime directories (set **before** process start; bound at `config` import):
 
-| Env | Default |
-|-----|---------|
-| `AMON_SESSIONS_DIR` | `scripts/amon/config/sessions/` |
-| `AMON_TOOL_OUTPUT_DIR` | `scripts/amon/config/tool_output/` |
+| Env | Default | Contents |
+|-----|---------|----------|
+| `AMON_SESSIONS_DIR` | `scripts/amon/config/sessions/` | Transcript `{uuid}`, meta `{uuid}.meta.json`, todos `{uuid}.todos.json` |
+| `AMON_TOOL_OUTPUT_DIR` | `scripts/amon/config/tool_output/` | Spill files for truncated tool output |
 
 ## Interactive slash commands
 
@@ -86,10 +86,21 @@ Typed at the `>` prompt (must be exact matches unless noted):
 | `/exit`, `/quit`, `/q` | Leave the REPL |
 | `/agent` | Pick another loaded agent |
 | `/sessions` | List sessions |
-| `/new` | Fresh session id + reset context footer |
-| `/compact` | LLM-summarize the current session transcript |
+| `/new` | Fresh session id + reset context footer **and** checklist toolbar |
+| `/compact` | LLM-summarize the session transcript and **rewrite** the session file with the summary (`save_session(…, override=True)`) |
 
 Unknown `/…` commands print a dim “not a command” message.
+
+### Checklist UX (`todo_write`)
+
+When the agent calls `todo_write`:
+
+- Streaming UI shows a magenta **☑ Checklist** panel (not the generic tool-result panel).
+- The bottom status footer keeps a live copy of the checklist lines under the token/context line.
+- On `--resume` / `--resume-id`, `show_welcome` seeds the footer from any `{session_id}.todos.json` sidecar so the list is visible immediately, not only after the next tool call.
+- `/new` clears the footer checklist via `reset_footer(todos=True)`.
+
+Persistence details (disk sidecar, resume re-injection, sharing via `session_id`): [agent-config](agent-config.md).
 
 ## Session flow (interactive)
 
@@ -177,8 +188,15 @@ Failed jobs use a red panel with `error` instead of the result body.
 
 Interactive mode opens with a welcome panel (`terminal.show_welcome`) showing the
 agent name and slash-command hints, then replays prior turns if `--resume`/`--resume-id`
-loaded an existing session. A footer tracks token usage against the context limit
-fetched once at startup via `_init_context_limit` (`get_context_window`).
+loaded an existing session. If that session has a saved checklist, the footer is
+seeded from it. A footer tracks token usage against the context limit fetched once
+at startup via `_init_context_limit` (`get_context_window`), plus any active
+checklist lines.
+
+Long runs compact automatically when prompt tokens cross `COMPACT_AT_TOKENS`, with
+a hard-trim fallback on overflow — auto-compact keeps the on-disk session file
+complete (in-memory only). Interactive `/compact` is different: it rewrites the
+session file to the summary. Details: [agent-config](agent-config.md).
 
 Ctrl+C during an interactive `run_agent` hard-cancels the current run (no delayed
 receive of the in-flight LLM response). ESC is not a cancel key.

@@ -34,8 +34,9 @@ scripts/amon/config/setup/install
 
 That creates/refreshes:
 
-- `~/.amon/agents/default.json`
-- `~/.amon/agents/planner.json`
+- `~/.amon/agents/default.json` (includes `todo_write` in `allowed_tools`)
+- `~/.amon/agents/planner.json` (read-only planner)
+- `~/.amon/agents/dev.json` (implementation agent; also allows `todo_write`)
 - `~/.amon/skills/python-validate/`
 - `~/.amon/skills/amon-author/`
 - `~/.amon/hooks/log.sh`
@@ -49,15 +50,16 @@ That's enough to start using amon. Everything below is for customizing it
 CLI (amon)
   └─ loads Agent JSON  (name, prompt, tools, skills, hooks)
        └─ agent loop
-            ├─ tools     (shell, read_file, write_file, load_skill, …)
+            ├─ tools     (shell, read_file, write_file, load_skill, todo_write, …)
             ├─ skills    (catalog injected into system prompt; loaded on demand)
-            └─ hooks     (start / preToolUse / postToolUse / stop)
+            ├─ hooks     (agentSpawn / start / preToolUse / postToolUse / stop)
+            └─ session   (transcript + optional .todos.json checklist sidecar)
 ```
 
 ## Doc map
 
-- [CLI](cli.md) — flags, sessions, interactive commands, headless mode
-- [Agent config](agent-config.md) — JSON schema, load order, tools vs allowed_tools
+- [CLI](cli.md) — flags, sessions, interactive commands, headless mode, checklist UX
+- [Agent config](agent-config.md) — JSON schema, tools (incl. `todo_write`), path guards, compaction
 - [Hooks](hooks.md) — events, env vars, Python/bash examples
 - [Skills](skills.md) — SKILL.md format, `skill://` URIs, catalog + load flow
 - [examples/](examples/) — copy-paste agent/hook/skill artifacts
