@@ -407,8 +407,8 @@ class TestAutoCompaction:
 class TestModelCallFailure:
     def test_recovers_by_compacting_and_retrying(self):
         responses = [RuntimeError("context length exceeded"), _response(content="ok")]
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+        with patch("scripts.amon.agent_loop._compact_history") as compact:
+            compact.return_value = True
             result, llm = _run(responses, registry=_registry(len))
         compact.assert_called_once()
         assert result.ok
@@ -417,16 +417,16 @@ class TestModelCallFailure:
 
     def test_retries_only_once_in_a_row(self):
         responses = [RuntimeError("boom"), RuntimeError("boom again")]
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+        with patch("scripts.amon.agent_loop._compact_history") as compact:
+            compact.return_value = True
             result, _ = _run(responses, registry=_registry(len))
         assert compact.call_count == 1
         assert not result.ok
         assert "boom again" in result.error
 
     def test_no_retry_when_compaction_fails(self):
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = None
+        with patch("scripts.amon.agent_loop._compact_history") as compact:
+            compact.return_value = False
             result, llm = _run([RuntimeError("boom")], registry=_registry(len))
         assert llm.call_count == 1
         assert not result.ok
@@ -438,8 +438,8 @@ class TestModelCallFailure:
             RuntimeError("second"),
             _response(content="done"),
         ]
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+        with patch("scripts.amon.agent_loop._compact_history") as compact:
+            compact.return_value = True
             result, _ = _run(responses, registry=_registry(lambda **kw: "ok"))
         assert compact.call_count == 2
         assert result.ok
@@ -449,16 +449,16 @@ class TestModelCallFailure:
             _response(content="partial work", tool_calls=_tool_call()),
             RuntimeError("context length exceeded"),
         ]
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = None
+        with patch("scripts.amon.agent_loop._compact_history") as compact:
+            compact.return_value = False
             result, _ = _run(responses, registry=_registry(lambda **kw: "ok"))
         assert not result.ok
         assert "context length exceeded" in result.error
         assert result.result == "partial work"
 
     def test_failure_on_the_first_turn_does_not_propagate(self):
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = None
+        with patch("scripts.amon.agent_loop._compact_history") as compact:
+            compact.return_value = False
             result, _ = _run([RuntimeError("boom")], registry=_registry(len))
         assert not result.ok
         assert result.result is None
@@ -484,6 +484,22 @@ class TestModelCallFailure:
         save.assert_called()
         events = [c.kwargs["hook_event_name"] for c in hook.call_args_list]
         assert "stop" in [getattr(e, "value", e) for e in events]
+
+    def test_context_length_failure_can_fall_back_to_hard_trim(self):
+        with (
+            patch("scripts.amon.agent_loop._compact_history") as compact,
+            patch("scripts.amon.agent_loop._force_hard_trim") as hard_trim,
+        ):
+            compact.return_value = False
+            hard_trim.return_value = True
+            result, llm = _run(
+                [RuntimeError("context_length_exceeded"), _response(content="ok")],
+                registry=_registry(len),
+            )
+        assert compact.call_count == 1
+        assert hard_trim.call_count == 1
+        assert result.ok
+        assert llm.call_count == 2
 
 
 # ---------------------------------------------------------------------- hooks

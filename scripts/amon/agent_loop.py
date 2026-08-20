@@ -19,24 +19,68 @@ from scripts.amon.tools.todo import get_todos, render_todos
 from shared.llm_client import call_llm, call_llm_with_tools, parse_llm_json
 
 
+def _is_context_length_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "context_length_exceeded" in text or "exceed the configured limit" in text
+
+
+def _normalize_message(msg: dict) -> dict:
+    role = msg.get("role")
+    content = str(msg.get("content") or "")
+    if role in ("system", "user", "assistant"):
+        return {"role": role, "content": content}
+    return {"role": role, "content": content}
+
+
+def _trim_for_summary(conversation: list[dict], limit: int = 24) -> list[dict]:
+    if len(conversation) <= limit:
+        return [_normalize_message(m) for m in conversation]
+    head = conversation[: max(4, limit // 3)]
+    tail = conversation[-max(8, (limit * 2) // 3) :]
+    return [
+        _normalize_message(m)
+        for m in head
+        + [
+            {
+                "role": "user",
+                "content": "[... earlier conversation omitted for compaction ...]",
+            }
+        ]
+        + tail
+    ]
+
+
 def compact_conversation(conversation: list[dict]) -> list[dict] | None:
     """Summarize *conversation* into a smaller message list, or None on failure.
 
-    Sanitized to plain role/content: a summarized ``tool_calls`` turn would
-    reference tool replies that no longer exist, which the provider rejects.
+    Uses bounded input first so compaction itself can recover from oversized
+    histories. Falls back to a deterministic hard trim if the model still
+    refuses because of context length.
     """
     if not conversation:
         return None
-    parsed = parse_llm_json(
-        call_llm(
-            f"summarize this conversation {conversation} return the summary as a "
-            f"json in the same structure as the original but significant smaller."
-        )
+
+    candidate = _trim_for_summary(conversation)
+    prompt = (
+        "Summarize this conversation into a much smaller JSON array with only "
+        "system/user/assistant messages. Preserve the latest task state, open "
+        "questions, and unresolved decisions. Do not include tool_calls or tool "
+        "messages. Return only valid JSON. Conversation:\n"
+        f"{candidate}"
     )
+
+    try:
+        parsed = parse_llm_json(call_llm(prompt))
+    except Exception as exc:  # noqa: BLE001
+        if not _is_context_length_error(exc):
+            return None
+        parsed = None
+
     if not isinstance(parsed, list):
         return None
+
     return [
-        {"role": m["role"], "content": str(m.get("content") or "")}
+        _normalize_message(m)
         for m in parsed
         if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
     ] or None
@@ -60,6 +104,24 @@ def _compact_history(conversation: list[dict]) -> bool:
     if not summary:
         return False
     conversation[:cut] = summary
+    return True
+
+
+def _force_hard_trim(conversation: list[dict], keep: int = 12) -> bool:
+    if len(conversation) <= keep:
+        return False
+    prefix = [m for m in conversation[:-keep] if m.get("role") == "system"][:1]
+    suffix = [_normalize_message(m) for m in conversation[-keep:]]
+    conversation[:] = (
+        prefix
+        + [
+            {
+                "role": "user",
+                "content": "[conversation truncated to preserve context window]",
+            }
+        ]
+        + suffix
+    )
     return True
 
 
@@ -197,8 +259,6 @@ def run_agent(
     new_messages = [{"role": "user", "content": user_input}]
 
     tools_used: list[str] = []
-    # last_usage = latest turn (context window size for footer/persist).
-    # accumulated_usage = sum across turns (what AgentResult.usage reports).
     last_usage = _empty_usage()
     accumulated_usage = _empty_usage()
     last_content = ""
@@ -210,12 +270,7 @@ def run_agent(
             return
         active_session_id = save_session(new_messages, session_id=active_session_id)
         if active_session_id:
-            # Context size is the latest prompt window, not the run sum.
             save_context_tokens(active_session_id, usage_dict.get("prompt_tokens", 0))
-        # Rebind (don't mutate) so the list just handed to save_session is
-        # left intact for the caller; safe to call _persist repeatedly (e.g.
-        # before a blocking confirm, then again at the end) without
-        # re-appending the same messages.
         new_messages = []
 
     def _finish(
@@ -237,7 +292,6 @@ def run_agent(
         )
 
     def _inject(stdout: str) -> None:
-        """Give the model a hook's output, and keep it in the session."""
         if not stdout.strip():
             return
         message = {"role": "user", "content": stdout.strip()}
@@ -245,7 +299,6 @@ def run_agent(
         new_messages.append(message)
 
     if not history:
-        # Closest thing to "agent activated": the first turn of a session.
         _inject(
             run_hook_event(
                 specs=hooks.get(HookEventName.AGENT_SPAWN, []),
@@ -294,10 +347,15 @@ def run_agent(
                 force_tool=force_first_tool and turn == 0 and bool(tool_definitions),
                 model=model,
             )
-        # Degrade instead of losing the run: the stop hook and _persist still run.
         except Exception as exc:  # noqa: BLE001
-            # A full context is the likeliest cause; shrink it and retry once.
-            if not retried and _compact_history(conversation):
+            if retried:
+                if _force_hard_trim(conversation):
+                    retried = False
+                    continue
+                stop_error = f"Model call failed: {exc}"
+                turns_taken = turn + 1
+                break
+            if _compact_history(conversation) or _force_hard_trim(conversation):
                 retried = True
                 continue
             stop_error = f"Model call failed: {exc}"
@@ -306,7 +364,6 @@ def run_agent(
 
         retried = False
 
-        # Extract the message from the full ChatCompletionResponse
         choice = response["choices"][0]
         message = choice["message"]
         last_usage = _turn_usage(response.get("usage"))
@@ -338,9 +395,6 @@ def run_agent(
                 turns=turn + 1,
             )
 
-        # Flush before any tool needs confirmation: a confirm prompt can
-        # block indefinitely (or hang the terminal), and the user's turn
-        # so far must survive a Ctrl+C out of that wait.
         _persist(last_usage)
 
         for call in tool_calls:
@@ -389,7 +443,6 @@ def run_agent(
                 except Exception as e:
                     _persist(last_usage)
                     result = f"Error: {e}"
-            # Passed explicitly so both knobs resolve per call.
             output = truncate_tool_output(
                 str(result),
                 tool=name,
@@ -425,7 +478,8 @@ def run_agent(
             )
 
         if last_usage["prompt_tokens"] > compact_at_tokens:
-            _compact_history(conversation)
+            if not _compact_history(conversation):
+                _force_hard_trim(conversation)
 
     _persist(last_usage)
 
