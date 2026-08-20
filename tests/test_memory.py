@@ -8,6 +8,8 @@ from scripts.amon.memory import (
     load_session,
     get_list_of_sessions,
     remove_session,
+    save_todos,
+    load_todos,
 )
 
 
@@ -55,6 +57,42 @@ class TestMemoryFunctions(unittest.TestCase):
     def test_remove_nonexistent_session(self):
         removed = remove_session(uuid4(), self.temp_dir)
         self.assertFalse(removed)
+
+    def test_save_and_load_todos(self):
+        todos = [{"content": "step one", "status": "in_progress"}]
+        save_todos(self.session_id, todos, self.temp_dir)
+        self.assertEqual(load_todos(self.session_id, self.temp_dir), todos)
+
+    def test_load_todos_for_unknown_session_is_empty(self):
+        self.assertEqual(load_todos(uuid4(), self.temp_dir), [])
+
+    def test_save_todos_overwrites_not_appends(self):
+        save_todos(
+            self.session_id, [{"content": "a", "status": "pending"}], self.temp_dir
+        )
+        save_todos(
+            self.session_id, [{"content": "b", "status": "pending"}], self.temp_dir
+        )
+        loaded = load_todos(self.session_id, self.temp_dir)
+        self.assertEqual(loaded, [{"content": "b", "status": "pending"}])
+
+    def test_todos_sidecar_excluded_from_session_list(self):
+        save_session(self.conversation, self.session_id, self.temp_dir)
+        save_todos(
+            self.session_id, [{"content": "a", "status": "pending"}], self.temp_dir
+        )
+        sessions = get_list_of_sessions(self.temp_dir)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0][0].name, str(self.session_id))
+
+    def test_remove_session_also_removes_todos_sidecar(self):
+        save_session(self.conversation, self.session_id, self.temp_dir)
+        save_todos(
+            self.session_id, [{"content": "a", "status": "pending"}], self.temp_dir
+        )
+        remove_session(self.session_id, self.temp_dir)
+        self.assertEqual(load_todos(self.session_id, self.temp_dir), [])
+        self.assertFalse((self.temp_dir / f"{self.session_id}.todos.json").exists())
 
 
 if __name__ == "__main__":

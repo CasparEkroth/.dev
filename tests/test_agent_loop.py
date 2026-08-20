@@ -577,6 +577,93 @@ class TestHookIntegration:
         assert result.ok
 
 
+# ------------------------------------------------------- todo resume/inject
+
+
+class TestTodoResumeInjection:
+    """A resumed session with a saved checklist should see it again."""
+
+    def test_existing_checklist_is_injected_on_resume(self):
+        with (
+            patch("scripts.amon.agent_loop.load_session") as load,
+            patch("scripts.amon.agent_loop.get_todos") as get_todos,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            load.return_value = [{"role": "user", "content": "earlier"}]
+            get_todos.return_value = [
+                {"content": "step one", "status": "completed"},
+                {"content": "step two", "status": "in_progress"},
+            ]
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=False,
+                headless=True,
+                session_id=uuid4(),
+            )
+        messages = llm.call_args_list[0].args[1]
+        injected = [
+            m["content"] for m in messages if "step two" in m.get("content", "")
+        ]
+        assert injected
+        assert "step one" in injected[0]
+        assert "Resuming" in injected[0]
+
+    def test_no_injection_when_no_saved_checklist(self):
+        with (
+            patch("scripts.amon.agent_loop.load_session") as load,
+            patch("scripts.amon.agent_loop.get_todos") as get_todos,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            load.return_value = [{"role": "user", "content": "earlier"}]
+            get_todos.return_value = []
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=False,
+                headless=True,
+                session_id=uuid4(),
+            )
+        # The captured list is mutated in place, so the assistant reply is
+        # present too — the point is no checklist message got inserted.
+        messages = llm.call_args_list[0].args[1]
+        assert [m["content"] for m in messages] == ["earlier", "task", "hi"]
+
+    def test_no_injection_on_a_brand_new_session(self):
+        """Empty history means it's the first turn — nothing to resume yet."""
+        with (
+            patch("scripts.amon.agent_loop.load_session") as load,
+            patch("scripts.amon.agent_loop.get_todos") as get_todos,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            load.return_value = []
+            get_todos.return_value = [{"content": "stale", "status": "pending"}]
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=False,
+                headless=True,
+                session_id=uuid4(),
+            )
+        get_todos.assert_not_called()
+        messages = llm.call_args_list[0].args[1]
+        assert not any("stale" in m.get("content", "") for m in messages)
+
+    def test_no_injection_or_lookup_without_a_session_id(self):
+        with (patch("scripts.amon.agent_loop.get_todos") as get_todos,):
+            _run([_response(content="hi")])
+        get_todos.assert_not_called()
+
+
 # -------------------------------------------------------- bad tool calls
 
 

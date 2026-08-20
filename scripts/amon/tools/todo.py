@@ -1,10 +1,24 @@
-"""In-memory checklist tool so an agent can track a multi-step task."""
+"""Checklist tool so an agent can track a multi-step task.
+
+Persisted per session (Phase 2 of TASK_TRACKING_PLAN.md): when a session id
+is given, the checklist is written to the same SESSIONS_DIR as the session
+transcript (via `scripts.amon.memory`), so it survives `--resume` and is
+visible to `spawn_agents` children given the same session id — those are
+separate processes, so the disk file (not the fallback store below) is what
+makes that work. A run with no session id (e.g. an ephemeral headless call
+with no `--session-id`) falls back to an in-memory, per-process store.
+"""
+
+from pathlib import Path
+
+from config import SESSIONS_DIR
+from scripts.amon.memory import load_todos, save_todos
 
 _VALID_STATUSES = {"pending", "in_progress", "completed"}
 _STATUS_MARK = {"pending": "○", "in_progress": "◐", "completed": "✓"}
 
-#: session id (str) -> list of {"content", "status"}.
-_TODOS: dict[str, list[dict]] = {}
+#: Fallback store for runs with no session id to persist against.
+_EPHEMERAL_TODOS: dict[str, list[dict]] = {}
 
 
 def render_todos(todos: list[dict]) -> str:
@@ -17,7 +31,11 @@ def render_todos(todos: list[dict]) -> str:
     )
 
 
-def write_todos(todos: list[dict], session_id: str | None = None) -> str:
+def write_todos(
+    todos: list[dict],
+    session_id: str | None = None,
+    session_dir: Path = SESSIONS_DIR,
+) -> str:
     """Replace the checklist for *session_id* and return it rendered.
 
     Each item needs a non-empty ``content`` and a ``status`` in
@@ -27,7 +45,6 @@ def write_todos(todos: list[dict], session_id: str | None = None) -> str:
     ``in_progress`` item is let through with a note rather than rejected —
     advisory, not a hard rule.
     """
-    key = session_id or "default"
     clean: list[dict] = []
     notes: list[str] = []
     in_progress_count = 0
@@ -48,7 +65,10 @@ def write_todos(todos: list[dict], session_id: str | None = None) -> str:
             in_progress_count += 1
         clean.append({"content": content, "status": status})
 
-    _TODOS[key] = clean
+    if session_id:
+        save_todos(session_id, clean, session_dir=session_dir)
+    else:
+        _EPHEMERAL_TODOS["default"] = clean
 
     if in_progress_count > 1:
         notes.append(
@@ -59,6 +79,10 @@ def write_todos(todos: list[dict], session_id: str | None = None) -> str:
     return "\n".join(notes)
 
 
-def get_todos(session_id: str | None = None) -> list[dict]:
+def get_todos(
+    session_id: str | None = None, session_dir: Path = SESSIONS_DIR
+) -> list[dict]:
     """Read back the current checklist for *session_id* (a copy)."""
-    return list(_TODOS.get(session_id or "default", []))
+    if session_id:
+        return load_todos(session_id, session_dir=session_dir)
+    return list(_EPHEMERAL_TODOS.get("default", []))

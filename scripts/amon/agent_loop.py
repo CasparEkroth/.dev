@@ -15,6 +15,7 @@ from config import (
 )
 from scripts.amon.hooks import HookEventName, run_hook_event
 from scripts.amon.memory import save_context_tokens, save_session, load_session
+from scripts.amon.tools.todo import get_todos, render_todos
 from shared.llm_client import call_llm, call_llm_with_tools, parse_llm_json
 
 
@@ -263,6 +264,14 @@ def run_agent(
             prompt=user_input,
         )[0]
     )
+
+    if history and active_session_id:
+        existing_todos = get_todos(str(active_session_id))
+        if existing_todos:
+            _inject(
+                "Resuming this session — existing checklist (call todo_write "
+                "to update it):\n" + render_todos(existing_todos)
+            )
 
     message = {"content": ""}
     started_at = time.monotonic()

@@ -56,6 +56,32 @@ def load_context_tokens(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> i
     return json.loads(path.read_text(encoding="utf-8")).get("context_tokens", 0)
 
 
+def _todos_path(session_id: UUID | str, session_dir: Path) -> Path:
+    return session_dir / f"{session_id}.todos.json"
+
+
+def save_todos(
+    session_id: UUID | str, todos: list[dict], session_dir: Path = SESSIONS_DIR
+) -> None:
+    """Persist *todos* for *session_id* alongside its session transcript.
+
+    Sidecar file (like `.meta.json`), so it survives `--resume` and is
+    visible to `spawn_agents` children given the same session id — those are
+    separate processes and can't share an in-memory store.
+    """
+    session_dir.mkdir(parents=True, exist_ok=True)
+    _todos_path(session_id, session_dir).write_text(
+        json.dumps(todos, indent=2), encoding="utf-8"
+    )
+
+
+def load_todos(session_id: UUID | str, session_dir: Path = SESSIONS_DIR) -> list[dict]:
+    path = _todos_path(session_id, session_dir)
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def get_list_of_sessions(
     session_dir: Path = SESSIONS_DIR,
 ) -> list[tuple[Path, float]]:
@@ -64,13 +90,14 @@ def get_list_of_sessions(
     return [
         (p, p.stat().st_mtime)
         for p in session_dir.iterdir()
-        if not p.name.endswith(".meta.json")
+        if not p.name.endswith(".meta.json") and not p.name.endswith(".todos.json")
     ]
 
 
 def remove_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> bool:
     path = session_dir / str(session_id)
     _meta_path(session_id, session_dir).unlink(missing_ok=True)
+    _todos_path(session_id, session_dir).unlink(missing_ok=True)
     try:
         path.unlink()
         return True
