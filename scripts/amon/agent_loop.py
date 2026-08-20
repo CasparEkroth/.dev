@@ -86,24 +86,56 @@ def compact_conversation(conversation: list[dict]) -> list[dict] | None:
     ] or None
 
 
-def _compact_history(conversation: list[dict]) -> bool:
-    """Summarize *conversation* in place, up to the last tool-calling turn.
+def _strip_unfinished_tool_turns(conversation: list[dict]) -> list[dict]:
+    clean = list(conversation)
+    while True:
+        last_assistant = next(
+            (
+                i
+                for i in range(len(clean) - 1, -1, -1)
+                if clean[i].get("role") == "assistant" and clean[i].get("tool_calls")
+            ),
+            None,
+        )
+        if last_assistant is None:
+            return clean
+        tool_ids = [
+            c.get("id")
+            for c in clean[last_assistant].get("tool_calls", [])
+            if c.get("id")
+        ]
+        if not tool_ids:
+            clean = clean[:last_assistant]
+            continue
+        seen = {tool_id: False for tool_id in tool_ids}
+        for msg in clean[last_assistant + 1 :]:
+            if msg.get("role") == "tool" and msg.get("tool_call_id") in seen:
+                seen[msg.get("tool_call_id")] = True
+        if all(seen.values()):
+            return clean
+        clean = clean[:last_assistant]
 
-    Cutting there keeps surviving tool replies with the message they refer to.
+
+def _compact_history(conversation: list[dict]) -> bool:
+    """Summarize *conversation* in place, preserving only complete tool cycles.
+
     Returns False when the summary was unusable and nothing changed.
     """
+    safe = _strip_unfinished_tool_turns(conversation)
+    if not safe:
+        return False
     cut = next(
         (
             i
-            for i in range(len(conversation) - 1, -1, -1)
-            if conversation[i].get("tool_calls")
+            for i in range(len(safe) - 1, -1, -1)
+            if safe[i].get("role") == "assistant" and safe[i].get("tool_calls")
         ),
-        len(conversation),
+        len(safe),
     )
-    summary = compact_conversation(conversation[:cut])
+    summary = compact_conversation(safe[:cut])
     if not summary:
         return False
-    conversation[:cut] = summary
+    conversation[:] = summary + safe[cut:]
     return True
 
 

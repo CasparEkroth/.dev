@@ -501,6 +501,89 @@ class TestModelCallFailure:
         assert result.ok
         assert llm.call_count == 2
 
+    def test_compact_history_keeps_assistant_tool_calls_with_their_tool_messages(self):
+        from scripts.amon.agent_loop import _compact_history
+
+        conversation = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "assistant",
+                "content": "do work",
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "echo", "arguments": "{}"}},
+                    {"id": "call_b", "function": {"name": "echo", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "content": "result a"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "result b"},
+            {"role": "user", "content": "more context"},
+        ]
+
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            assert _compact_history(conversation) is True
+
+        assert compact.call_args.args[0] == [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+        ]
+        assert conversation[0] == {"role": "user", "content": "summary"}
+
+    def test_compact_history_does_not_orphan_tool_calls(self):
+        from scripts.amon.agent_loop import _compact_history
+
+        conversation = [
+            {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": "call tools",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "echo", "arguments": "{}"}},
+                    {"id": "call_2", "function": {"name": "echo", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result 1"},
+        ]
+
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            assert _compact_history(conversation) is True
+
+        assert conversation[0] == {"role": "user", "content": "summary"}
+        assert all(
+            not (m.get("role") == "assistant" and m.get("tool_calls"))
+            for m in conversation
+        )
+
+    def test_compact_history_drops_unfinished_tool_turns_before_compacting(self):
+        from scripts.amon.agent_loop import _compact_history
+
+        conversation = [
+            {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": "call tools",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "echo", "arguments": "{}"}},
+                    {"id": "call_2", "function": {"name": "echo", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result 1"},
+            {"role": "user", "content": "later"},
+        ]
+
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            assert _compact_history(conversation) is True
+
+        compacted_input = compact.call_args.args[0]
+        assert all(
+            m.get("role") != "assistant" or not m.get("tool_calls")
+            for m in compacted_input
+        )
+        assert conversation[0] == {"role": "user", "content": "summary"}
+
 
 # ---------------------------------------------------------------------- hooks
 
