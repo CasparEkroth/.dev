@@ -64,7 +64,14 @@ class TestWriteFile(unittest.TestCase):
         target = self.root / "code.py"
         target.write_text("a = 1\nb = 2\nc = 3\n")
         result = write_file(
-            [{"path": str(target), "old": "", "new": "totally new\n", "overwrite": True}]
+            [
+                {
+                    "path": str(target),
+                    "old": "",
+                    "new": "totally new\n",
+                    "overwrite": True,
+                }
+            ]
         )
         self.assertEqual(target.read_text(), "totally new\n")
         self.assertIn("overwritten", result)

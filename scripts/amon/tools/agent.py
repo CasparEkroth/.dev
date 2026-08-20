@@ -109,6 +109,7 @@ class Agent(BaseModel):
                 allow_paths=self.allow_paths,
                 deny_paths=self.deny_paths,
                 denied_commands=self.denied_commands,
+                session_id=session_id,
             ),
             skill_catalog=catalog_for_agent(self.allowed_skills),
             headless=True,

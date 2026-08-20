@@ -8,10 +8,13 @@ from scripts.amon.tools.agent import load_ready_agents
 from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
 from shared.file_handler import read_file, write_file
 from scripts.amon.tools.skills import load_skill
+from scripts.amon.tools.todo import write_todos
 
 # Tools that accept server-side path/command guards (not model-visible params).
 _PATH_GUARDED_TOOLS = frozenset({"read_file", "write_file", "shell", "shell_readonly"})
 _COMMAND_GUARDED_TOOLS = frozenset({"shell", "shell_readonly"})
+#: Tools that get the current session id bound server-side (not a model-visible param).
+_SESSION_BOUND_TOOLS = frozenset({"todo_write"})
 
 _READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
 
@@ -203,6 +206,49 @@ tool_registry = {
         "fn": load_skill,
         "requires_confirmation": True,
     },
+    "todo_write": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "todo_write",
+                "description": (
+                    "Set/replace the checklist of steps for the current task. Call "
+                    "this first for any request with more than one distinct step, "
+                    "before any other tool call. Replaces the ENTIRE list each "
+                    "call — resend items you're keeping, don't just send the diff. "
+                    "Keep at most one item 'in_progress' at a time, and mark an "
+                    "item 'completed' immediately after finishing it rather than "
+                    "batching updates at the end."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "todos": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": {
+                                        "type": "string",
+                                        "description": "One concrete step, e.g. 'Add overwrite mode to write_file'",
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["pending", "in_progress", "completed"],
+                                    },
+                                },
+                                "required": ["content", "status"],
+                            },
+                            "description": "The full checklist, e.g. [{'content': 'Read the affected files', 'status': 'completed'}, {'content': 'Implement the change', 'status': 'in_progress'}, {'content': 'Add tests', 'status': 'pending'}]",
+                        },
+                    },
+                    "required": ["todos"],
+                },
+            },
+        },
+        "fn": write_todos,
+        "requires_confirmation": True,
+    },
 }
 
 # Load agents after tool_registry exists so the wildcard validator can import it.
@@ -308,15 +354,16 @@ def get_registry(
     allow_paths: list[str] | None = None,
     deny_paths: list[str] | None = None,
     denied_commands: list[str] | None = None,
+    session_id: object | None = None,
 ) -> dict:
     """Select this agent's tools, with its own confirmation and path policy.
 
     Each entry is a copy: writing the flag back onto the shared ``tool_registry``
     made it process-wide, so one permissive agent disabled confirmation for all.
 
-    ``allow_paths`` / ``deny_paths`` / ``denied_commands`` are bound onto the
-    tool callables with ``functools.partial`` — they are never added to the
-    JSON schema the model sees.
+    ``allow_paths`` / ``deny_paths`` / ``denied_commands`` / ``session_id`` are
+    bound onto the tool callables with ``functools.partial`` — they are never
+    added to the JSON schema the model sees.
     """
     if tools is None:
         return {}
@@ -341,5 +388,9 @@ def get_registry(
                 kwargs["denied_commands"] = denied_commands
             if kwargs:
                 entry["fn"] = partial(v["fn"], **kwargs)
+        if k in _SESSION_BOUND_TOOLS:
+            entry["fn"] = partial(
+                entry["fn"], session_id=str(session_id) if session_id else None
+            )
         out[k] = entry
     return out

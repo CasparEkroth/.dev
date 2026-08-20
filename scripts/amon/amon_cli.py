@@ -283,6 +283,7 @@ def _run_interactive(args) -> None:
                         allow_paths=agent.allow_paths,
                         deny_paths=agent.deny_paths,
                         denied_commands=agent.denied_commands,
+                        session_id=session_id,
                     ),
                     skill_catalog=catalog_for_agent(agent.allowed_skills),
                     confirm_fn=terminal.confirm_tool,

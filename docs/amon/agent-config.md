@@ -109,6 +109,7 @@ Built-in tool names today:
 - `read_file`
 - `write_file`
 - `load_skill`
+- `todo_write`
 - `spawn_agents` (registered after agents load)
 
 Notable tool behaviour:
@@ -127,6 +128,13 @@ Notable tool behaviour:
   file's entire contents with `new` in one call (creating it and parent
   directories if needed, `old` ignored) — use this for a full rewrite or a
   new implementation instead of chaining many small `old`/`new` patches.
+- `todo_write` sets/replaces the checklist of steps for the current task —
+  each call replaces the entire list, and the result echoes it back
+  rendered so there's no separate read tool. It has no filesystem/shell
+  side effect. Storage is in-memory, per process, keyed by session id (bound
+  server-side via `get_registry`'s `session_id` argument — not a
+  model-visible parameter): it does not survive `--resume` and is not
+  shared with `spawn_agents` children, which run as separate processes.
 - Every tool result is capped at `MAX_TOOL_OUTPUT_CHARS` (or the agent's
   `max_tool_output_chars` when set) before it enters the conversation. Longer
   output keeps its head and tail, and the full text is written to
