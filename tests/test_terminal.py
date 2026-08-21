@@ -31,6 +31,23 @@ class TestStatusFooterTodos(unittest.TestCase):
         footer.reset_footer(context=True)
         self.assertEqual(footer.todo_lines, ["✓ [completed] a"])
 
+    def test_angle_bracket_in_todo_text_does_not_crash_render(self):
+        # Regression: prompt_toolkit's HTML() parses "<...>" as markup and
+        # raised ExpatError on ordinary text like "List<int>" before this
+        # was escaped via .format() instead of raw string concatenation.
+        footer = StatusFooter()
+        footer.set_todo_lines(["○ [pending] fix List<int> handling & done"])
+        html = footer.render_html()  # must not raise
+        self.assertIn("List&lt;int&gt;", str(html))
+        self.assertIn("&amp;", str(html))
+
+    def test_bold_markup_in_header_still_renders_as_markup(self):
+        # The header's own <b> tags are real markup, not user text, and must
+        # survive the same render_html() call that now escapes todo_lines.
+        footer = StatusFooter()
+        footer.set_todo_lines(["○ [pending] a"])
+        self.assertIn("<b>", str(footer.render_html()))
+
 
 class TestTodoLineExtraction(unittest.TestCase):
     def test_matches_rendered_checklist_lines(self):

@@ -79,10 +79,16 @@ class StatusFooter:
                 if self.context_limit
                 else 0.0
             )
-        text = f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
-        if self.todo_lines:
-            text += "\n" + "\n".join(self.todo_lines)
-        return HTML(text)
+        header = f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
+        if not self.todo_lines:
+            return HTML(header)
+        # todo_lines is free-form text a todo_write call wrote — it can
+        # contain "<" / "&" (e.g. "fix List<int> handling"), which HTML()
+        # would otherwise try to parse as markup and raise ExpatError,
+        # crashing the bottom-toolbar render. header's own <b> tags are real
+        # markup and must NOT go through this escaping, so only the
+        # placeholder gets it via .format().
+        return HTML(header + "\n{}").format("\n".join(self.todo_lines))
 
 
 footer = StatusFooter()

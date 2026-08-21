@@ -12,7 +12,7 @@ from scripts.amon.tools.registry import (
     get_registry,
     READY_AGENTS,
 )
-from scripts.amon.agent_loop import compact_conversation, run_agent
+from scripts.amon.agent_loop import _compact_history, run_agent
 from scripts.amon import terminal
 from scripts.amon.memory import (
     clear_sessions,
@@ -250,15 +250,20 @@ def _run_interactive(args) -> None:
             if not conversation:
                 terminal.console.print("[dim]Session is empty.[/dim]")
                 continue
+            # Same path the auto-compactor uses: strips any dangling
+            # tool_calls first and only summarizes the safe head, keeping the
+            # most recent complete tool cycle verbatim — the plain
+            # compact_conversation() call this replaced had neither
+            # protection and could silently drop in-flight tool state.
             with terminal.spinner_context():
-                new_conversation = compact_conversation(conversation)
-            if new_conversation is None:
+                ok = _compact_history(conversation)
+            if not ok:
                 terminal.console.print(
                     "[red]Compact failed: model did not return valid JSON.[/red]"
                 )
                 continue
             save_session(
-                conversation=new_conversation,
+                conversation=conversation,
                 session_id=session_id,
                 override=True,
             )
@@ -297,6 +302,7 @@ def _run_interactive(args) -> None:
                     max_runtime_s=agent.max_runtime_s,
                     model=agent.model,
                     system_prompt_template=agent.system_prompt_template,
+                    max_tool_output_chars=agent.max_tool_output_chars,
                 )
             except KeyboardInterrupt:
                 # Hard cancel: in-flight HTTP is aborted; no delayed receive.

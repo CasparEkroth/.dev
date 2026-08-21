@@ -214,6 +214,37 @@ def test_get_registry_shares_schema_and_fn():
     assert entry["schema"] is tool_registry["shell"]["schema"]
 
 
+def test_wildcard_bare_string_normalized_but_not_expanded(tmp_path):
+    """"*" becomes ["*"] at load time, but stays unexpanded.
+
+    Regression for the bug where eager expansion at Agent-load time ran
+    before spawn_agents was registered, so wildcard agents silently never
+    got it. Expansion now happens in get_registry instead (see below).
+    """
+    config = {
+        "name": "a",
+        "description": "d",
+        "system_prompt": "hi",
+        "tools": "*",
+        "allowed_tools": "*",
+    }
+    config_file = tmp_path / "a.json"
+    config_file.write_text(json.dumps(config))
+
+    agent = Agent.from_file(config_file)
+    assert agent.tools == ["*"]
+    assert agent.allowed_tools == ["*"]
+
+
+def test_get_registry_expands_wildcard_at_call_time_including_spawn_agents():
+    from scripts.amon.tools.registry import get_registry, tool_registry
+
+    reg = get_registry(tools=["*"], allowed_tools=["*"])
+    assert set(reg) == set(tool_registry)
+    assert "spawn_agents" in reg
+    assert reg["spawn_agents"]["requires_confirmation"] is False
+
+
 def test_get_registry_selection_rules():
     from scripts.amon.tools.registry import get_registry
 

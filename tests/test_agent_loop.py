@@ -275,6 +275,20 @@ class TestBudgets:
         default = inspect.signature(run_agent).parameters["max_turns"].default
         assert default == DEFAULT_MAX_TURNS
 
+    def test_hooks_default_is_not_a_shared_mutable(self):
+        """Regression: `hooks: dict = {}` on the signature is a classic
+        shared-mutable-default footgun even though nothing currently mutates
+        it in place. The default must be None, normalized inside the body."""
+        import inspect
+
+        default = inspect.signature(run_agent).parameters["hooks"].default
+        assert default is None
+
+    def test_omitted_hooks_does_not_crash(self):
+        # Would raise on hooks.get(...) if the None -> {} normalization broke.
+        result, _ = _run([_response(content="hi")], registry=_registry(len))
+        assert result.ok
+
 
 # --------------------------------------------------------------- compaction
 
@@ -674,6 +688,83 @@ class TestHookIntegration:
         tool_msg = next(m for m in conversation if m.get("role") == "tool")
         assert "writes are not allowed here" in tool_msg["content"]
         assert result.ok
+
+
+# --------------------------------------------- orphaned tool cycle on load
+
+
+class TestSanitizeHistoryOnLoad:
+    """A prior run interrupted between persisting tool_calls and appending
+    the matching tool replies leaves an incomplete cycle on disk. Loading it
+    straight into a new call breaks the API request."""
+
+    def test_dangling_tool_calls_are_stripped_from_loaded_history(self):
+        orphaned_history = [
+            {"role": "user", "content": "earlier task"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "echo", "arguments": "{}"}}
+                ],
+            },
+            # No matching {"role": "tool", "tool_call_id": "c1", ...} — the
+            # run was interrupted before the tool finished.
+        ]
+        with (
+            patch("scripts.amon.agent_loop.load_session") as load,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            load.return_value = orphaned_history
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=False,
+                headless=True,
+                session_id=uuid4(),
+            )
+        sent = llm.call_args_list[0].args[1]
+        # The orphaned assistant tool_calls message is gone...
+        assert not any(m.get("tool_calls") for m in sent)
+        # ...but the user message before it, and this turn's new input,
+        # both survive — only the incomplete cycle is stripped.
+        contents = [m.get("content") for m in sent]
+        assert "earlier task" in contents
+        assert "task" in contents
+
+    def test_complete_history_is_untouched(self):
+        complete_history = [
+            {"role": "user", "content": "earlier task"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "echo", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "done"},
+        ]
+        with (
+            patch("scripts.amon.agent_loop.load_session") as load,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            load.return_value = complete_history
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=False,
+                headless=True,
+                session_id=uuid4(),
+            )
+        sent = llm.call_args_list[0].args[1]
+        assert any(m.get("tool_calls") for m in sent)
+        assert any(m.get("role") == "tool" for m in sent)
 
 
 # ------------------------------------------------------- todo resume/inject

@@ -100,7 +100,10 @@ Example: [examples/path-restricted-agent.json](examples/path-restricted-agent.js
 - `tools` — what the model **can see/call**
 - `allowed_tools` — which of those skip the interactive confirm UI
 
-Wildcard: `"*"` or `["*"]` expands to every key in `tool_registry` at load time.
+Wildcard: `"*"` or `["*"]` expands to every key in `tool_registry`, resolved
+when `get_registry` builds the agent's tools (not when the agent config
+loads) — this is what makes `spawn_agents` actually reachable from a
+wildcard agent, since it's only added to `tool_registry` after agents load.
 
 Built-in tool names today:
 
@@ -160,6 +163,13 @@ Notable tool behaviour:
 - Session artifacts live under `SESSIONS_DIR` (`AMON_SESSIONS_DIR` overrides):
   transcript file `{uuid}`, token meta `{uuid}.meta.json`, and optional todo
   sidecar `{uuid}.todos.json`.
+- Loading a session (resume, or any run with a `session_id`) strips any
+  unfinished tool cycle from the transcript before it's sent to the model.
+  An interrupt (Ctrl+C, crash) can land between persisting an assistant's
+  `tool_calls` and appending the matching `role: tool` replies; resending
+  that half-formed pair breaks the next API call. The strip is a no-op for a
+  session that ended cleanly, and it only affects what's sent to the model —
+  the file on disk is untouched.
 - **Prompt compaction**:
   - **Auto (during a run):** when the last turn's `prompt_tokens` crosses
     `COMPACT_AT_TOKENS` (75% of `BASE_CONTEXT_WINDOW`), or as a retry after a
@@ -173,10 +183,12 @@ Notable tool behaviour:
     still fails — a long run keeps going instead of dying on context overflow.
   - If compaction and hard trim cannot recover after a retry, the run returns
     its partial result and error rather than losing everything.
-  - **Interactive `/compact`:** calls `compact_conversation` on the loaded
-    transcript and **rewrites** the session file with the summary
-    (`override=True`). It does not run the unfinished-tool-cycle strip or hard
-    trim used by auto-compact.
+  - **Interactive `/compact`:** now shares `_compact_history` with
+    auto-compact (same unfinished-tool-cycle strip, same safe-tail handling),
+    then **rewrites** the session file with the result (`override=True`). No
+    hard-trim fallback here — if the summary call fails, `/compact` reports
+    failure and leaves the on-disk transcript untouched, rather than falling
+    back to a lossy trim the user didn't ask for.
 
 ## Project-local override pattern
 

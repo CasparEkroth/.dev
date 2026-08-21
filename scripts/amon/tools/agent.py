@@ -57,18 +57,21 @@ class Agent(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def expand_wildcards(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            if data.get("tools") in (["*"], "*") or data.get("allowed_tools") in (
-                ["*"],
-                "*",
-            ):
-                from scripts.amon.tools.registry import tool_registry
+    def normalize_wildcards(cls, data: Any) -> Any:
+        """Accept a bare "*" as shorthand for ["*"].
 
-                if data.get("tools") in (["*"], "*"):
-                    data["tools"] = list(tool_registry.keys())
-                if data.get("allowed_tools") in (["*"], "*"):
-                    data["allowed_tools"] = list(tool_registry.keys())
+        Does NOT expand to the full tool list here: at load time
+        `tool_registry` doesn't have `spawn_agents` yet (it's added after
+        `READY_AGENTS` loads, since its schema needs `READY_AGENTS`), so an
+        agent validated at this point would silently lose it. Expansion
+        happens in `get_registry` instead, which only ever runs after the
+        registry is fully built.
+        """
+        if isinstance(data, dict):
+            if data.get("tools") == "*":
+                data["tools"] = ["*"]
+            if data.get("allowed_tools") == "*":
+                data["allowed_tools"] = ["*"]
         return data
 
     @classmethod

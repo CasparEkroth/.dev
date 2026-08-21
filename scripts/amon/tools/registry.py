@@ -27,8 +27,6 @@ def _spawn_agents(*args, **kwargs):
     return json.dumps(results, ensure_ascii=False, indent=2)
 
 
-# tool_registry must be defined before load_ready_agents() is called,
-# because Agent.expand_wildcards lazily imports tool_registry from this module.
 tool_registry = {
     "shell": {
         "schema": {
@@ -364,11 +362,22 @@ def get_registry(
     ``allow_paths`` / ``deny_paths`` / ``denied_commands`` / ``session_id`` are
     bound onto the tool callables with ``functools.partial`` — they are never
     added to the JSON schema the model sees.
+
+    ``["*"]`` in ``tools`` / ``allowed_tools`` expands to every registered
+    tool name, resolved here rather than at agent-load time — this is the
+    only point guaranteed to run after ``tool_registry`` is fully built
+    (``spawn_agents`` is added to it after ``READY_AGENTS`` loads, since its
+    schema needs the agent list; expanding any earlier would silently drop it
+    from every wildcard agent).
     """
     if tools is None:
         return {}
+    if tools == ["*"]:
+        tools = list(tool_registry.keys())
 
     allowed = allowed_tools or []
+    if allowed == ["*"]:
+        allowed = list(tool_registry.keys())
     allow_paths = list(allow_paths or [])
     deny_paths = list(deny_paths or [])
     denied_commands = list(denied_commands or [])

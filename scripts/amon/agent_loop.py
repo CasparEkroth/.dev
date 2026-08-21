@@ -256,7 +256,7 @@ def run_agent(
     session_id: UUID = None,
     save_session_: bool = True,
     headless: bool = False,
-    hooks: dict[str, list[dict]] = {},
+    hooks: dict[str, list[dict]] | None = None,
     force_first_tool: bool = False,
     max_runtime_s: float | None = None,
     model: str | None = None,
@@ -278,6 +278,7 @@ def run_agent(
     """
     from scripts.amon.terminal import confirm_tool, stream_action
 
+    hooks = hooks or {}
     tool_definitions = [t["schema"] for t in tool_registry.values()]
     confirm_fn = confirm_fn or confirm_tool
     stream_actions = stream_actions or stream_action if not headless else None
@@ -286,7 +287,12 @@ def run_agent(
     system_prompt = build_system_prompt(
         system_prompt, skill_catalog, system_prompt_template
     )
-    history = load_session(session_id) if session_id else []
+    # Sanitize on load: a prior run interrupted (Ctrl+C, crash) between
+    # persisting an assistant's tool_calls and appending the matching tool
+    # replies leaves an incomplete cycle on disk. Sending that straight to
+    # the API breaks the request; stripping it here is a no-op for any
+    # session that ended cleanly.
+    history = _strip_unfinished_tool_turns(load_session(session_id)) if session_id else []
     conversation = history + [{"role": "user", "content": user_input}]
     new_messages = [{"role": "user", "content": user_input}]
 
