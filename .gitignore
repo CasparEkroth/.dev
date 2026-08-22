@@ -219,4 +219,5 @@ __marimo__/
 
 vectors.json
 sessions/
+tool_output/
 .amon

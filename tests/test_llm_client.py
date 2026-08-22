@@ -292,6 +292,43 @@ def test_call_llm_with_tools_force_tool_azure(monkeypatch):
     assert kwargs["tool_choice"] == "required"
 
 
+def test_call_llm_with_tools_model_override(monkeypatch):
+    monkeypatch.setattr(llm_client.settings, "LLM_PROVIDER", "xai")
+    monkeypatch.setattr(llm_client.settings, "LLM_MODEL", "configured-default")
+    monkeypatch.setattr(llm_client.settings, "LLM_REASONING_MODEL", False)
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _sdk_response(
+        STRUCTURED_TOOL_RESPONSE
+    )
+    monkeypatch.setattr(llm_client, "get_llm_client", lambda: mock_client)
+
+    call_llm_with_tools(
+        "sys",
+        [{"role": "user", "content": "hi"}],
+        [SAMPLE_TOOL],
+        model="agent-pinned-model",
+    )
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["model"] == "agent-pinned-model"
+
+
+def test_call_llm_with_tools_falls_back_to_configured_model(monkeypatch):
+    monkeypatch.setattr(llm_client.settings, "LLM_PROVIDER", "xai")
+    monkeypatch.setattr(llm_client.settings, "LLM_MODEL", "configured-default")
+    monkeypatch.setattr(llm_client.settings, "LLM_REASONING_MODEL", False)
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _sdk_response(
+        STRUCTURED_TOOL_RESPONSE
+    )
+    monkeypatch.setattr(llm_client, "get_llm_client", lambda: mock_client)
+
+    call_llm_with_tools("sys", [{"role": "user", "content": "hi"}], [SAMPLE_TOOL])
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["model"] == "configured-default"
+
+
 # ---------------------------------------------------------------------------
 # Reasoning-model param translation
 # ---------------------------------------------------------------------------

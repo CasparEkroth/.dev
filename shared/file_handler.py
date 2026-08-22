@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
 
+from shared.path_guard import check_path_access
+
 
 def scan_folder(
     cwd: str | Path,
@@ -43,7 +45,14 @@ def read_files(paths: list[Path]) -> list[dict]:
     return collection
 
 
-def read_file(path: str, start_line: int = None, end_line: int = None) -> dict:
+def read_file(
+    path: str,
+    start_line: int = None,
+    end_line: int = None,
+    allow_paths: list[str] | None = None,
+    deny_paths: list[str] | None = None,
+) -> dict:
+    check_path_access(path, allow_paths=allow_paths, deny_paths=deny_paths)
     abspath = os.path.abspath(path)
     with open(abspath, "r") as f:
         content = f.read()
@@ -54,22 +63,59 @@ def read_file(path: str, start_line: int = None, end_line: int = None) -> dict:
         }
     lines = content.splitlines()
 
+    # Tool schema is 1-based inclusive; convert to 0-based slice indices.
+    start = max(start_line - 1, 0) if start_line else 0
+    end = end_line if end_line else len(lines)
     return {
         "ok": True,
-        "content": lines[
-            start_line if start_line else 0 : end_line if end_line else len(lines)
-        ],
+        "content": lines[start:end],
     }
 
 
-def write_file(content: list[dict]) -> str:
+def write_file(
+    content: list[dict],
+    allow_paths: list[str] | None = None,
+    deny_paths: list[str] | None = None,
+) -> str:
+    """Apply a batch of ``{"path", "old", "new", "overwrite"?}`` edits, one status line each.
+
+    ``overwrite: true`` replaces the whole file with ``new`` (creating it, and
+    any missing parent directories, if it doesn't exist yet) — ``old`` is
+    ignored. Otherwise: empty ``old`` appends, or creates the file when it
+    does not exist yet; otherwise the first occurrence of ``old`` is replaced.
+    """
+    # Pre-check every path so a mid-batch deny cannot leave partial writes.
+    if allow_paths or deny_paths:
+        for section in content:
+            raw = section.get("path") or ""
+            if raw:
+                check_path_access(raw, allow_paths=allow_paths, deny_paths=deny_paths)
+
     results = []
     for section in content:
-        path = Path(section.get("path"))
+        raw_path = section.get("path") or ""
         old = section.get("old", "")
         new = section.get("new", "")
+        overwrite = bool(section.get("overwrite", False))
+        if not raw_path:
+            results.append("<no path>: missing 'path', no changes made")
+            continue
+        path = Path(raw_path)
+
+        if overwrite:
+            existed = path.is_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(new)
+            results.append(f"{path}: {'overwritten' if existed else 'created file'}")
+            continue
+
         # handel old is eampty####
         if not path.is_file():
+            if old == "" and new != "":
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(new)
+                results.append(f"{path}: created file")
+                continue
             results.append(f"{path}: file not found")
             continue
 

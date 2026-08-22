@@ -24,6 +24,9 @@ amon --delete-session 13e5ab9e-ab29-40e3-ade9-e4b316ffdf28
 amon --keep-N-sessions 5
 amon --headless "list python packages in this repo" --agent default
 amon --headless "list python packages in this repo" --json
+amon --headless "…" --json --session-id 13e5ab9e-ab29-40e3-ade9-e4b316ffdf28
+amon --headless "…" --json --model gpt-x --max-turns 20
+amon --headless "…" --json --stream   # tool events on stderr
 ```
 
 ## Flags
@@ -42,6 +45,10 @@ Full table (exit behavior, types, defaults): [amon-author reference](examples/sk
 | `--headless INPUT` | Non-interactive single prompt |
 | `--json` | Headless only: print the result as JSON on stdout (pipe-clean). Errors if used without `--headless` |
 | `--save-session` | Headless only: save the session (see below) |
+| `--session-id UUID` | Headless only: use/resume this session id |
+| `--model NAME` | Headless only: override agent model for this run |
+| `--max-turns N` | Headless only: override agent max turns for this run |
+| `--stream` | Headless only: stream tool calls/results to stderr (`AMON_STREAM=1`) |
 
 Session saving differs by mode:
 
@@ -49,6 +56,26 @@ Session saving differs by mode:
 - **Headless CLI**: does **not** save by default. Pass `--save-session` to persist.
 - **`spawn_agents` (API/tool)**: also defaults `save_session=false` per job; set
   `save_session: true` on a job to persist.
+
+Headless per-run overrides (CLI flags map 1:1 onto the job dict / `spawn_agents`
+job fields):
+
+- `--session-id` → `session_id` (resume transcript if present)
+- `--model` → `model`
+- `--max-turns` → `max_turns`
+- `--stream` sets env `AMON_STREAM=1` so tool events go to stderr via
+  `terminal.stream_action_stderr` (stdout stays clean with `--json`)
+
+`spawn_agents` also accepts top-level `output` (checkpoint JSON path),
+`max_parallel`, and `timeout_s`. Job fields: `save_session`, `session_id`,
+`model`, `max_turns`.
+
+Runtime directories (set **before** process start; bound at `config` import):
+
+| Env | Default | Contents |
+|-----|---------|----------|
+| `AMON_SESSIONS_DIR` | `scripts/amon/config/sessions/` | Transcript `{uuid}`, meta `{uuid}.meta.json`, todos `{uuid}.todos.json` |
+| `AMON_TOOL_OUTPUT_DIR` | `scripts/amon/config/tool_output/` | Spill files for truncated tool output |
 
 ## Interactive slash commands
 
@@ -59,10 +86,21 @@ Typed at the `>` prompt (must be exact matches unless noted):
 | `/exit`, `/quit`, `/q` | Leave the REPL |
 | `/agent` | Pick another loaded agent |
 | `/sessions` | List sessions |
-| `/new` | Fresh session id + reset context footer |
-| `/compact` | LLM-summarize the current session transcript |
+| `/new` | Fresh session id + reset context footer **and** checklist toolbar |
+| `/compact` | LLM-summarize the session transcript and **rewrite** the session file with the summary (`save_session(…, override=True)`) |
 
 Unknown `/…` commands print a dim “not a command” message.
+
+### Checklist UX (`todo_write`)
+
+When the agent calls `todo_write`:
+
+- Streaming UI shows a magenta **☑ Checklist** panel (not the generic tool-result panel).
+- The bottom status footer keeps a live copy of the checklist lines under the token/context line.
+- On `--resume` / `--resume-id`, `show_welcome` seeds the footer from any `{session_id}.todos.json` sidecar so the list is visible immediately, not only after the next tool call.
+- `/new` clears the footer checklist via `reset_footer(todos=True)`.
+
+Persistence details (disk sidecar, resume re-injection, sharing via `session_id`): [agent-config](agent-config.md).
 
 ## Session flow (interactive)
 
@@ -78,10 +116,16 @@ Unknown `/…` commands print a dim “not a command” message.
 
 ```text
 amon --headless TASK --agent NAME [--json] [--save-session]
-  → spawn_agents([{agent: NAME, task: TASK, save_session: …}])
-  → Agent.run_task (headless=True)
+                 [--session-id UUID] [--model M] [--max-turns N] [--stream]
+  → optional: AMON_STREAM=1 when --stream
+  → run_jobs([{agent, task, save_session, session_id?, model?, max_turns?}])  # THIS process
+  → Agent.run_task (headless=True; streams to stderr if AMON_STREAM)
   → print result (rich panels) or JSON if --json
 ```
+
+The `spawn_agents` tool is the other direction: it launches `amon --headless
+--json` children, capped and killable. Headless runs in-process so a child can
+never spawn a grandchild.
 
 ### `--json` output
 
@@ -144,8 +188,15 @@ Failed jobs use a red panel with `error` instead of the result body.
 
 Interactive mode opens with a welcome panel (`terminal.show_welcome`) showing the
 agent name and slash-command hints, then replays prior turns if `--resume`/`--resume-id`
-loaded an existing session. A footer tracks token usage against the context limit
-fetched once at startup via `_init_context_limit` (`get_context_window`).
+loaded an existing session. If that session has a saved checklist, the footer is
+seeded from it. A footer tracks token usage against the context limit fetched once
+at startup via `_init_context_limit` (`get_context_window`), plus any active
+checklist lines.
+
+Long runs compact automatically when prompt tokens cross `COMPACT_AT_TOKENS`, with
+a hard-trim fallback on overflow — auto-compact keeps the on-disk session file
+complete (in-memory only). Interactive `/compact` is different: it rewrites the
+session file to the summary. Details: [agent-config](agent-config.md).
 
 Ctrl+C during an interactive `run_agent` hard-cancels the current run (no delayed
 receive of the in-flight LLM response). ESC is not a cancel key.

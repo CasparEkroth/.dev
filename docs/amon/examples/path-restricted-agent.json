@@ -1,0 +1,11 @@
+{
+  "name": "path-restricted",
+  "description": "Repo-scoped agent: can only touch the workspace tree, cannot read secrets/VCS internals, and cannot run destructive or network commands.",
+  "system_prompt": "You work only inside this repository. Prefer read_file / write_file / shell_readonly. Do not attempt to read secrets or use blocked commands — they are denied server-side.",
+  "tools": ["read_file", "write_file", "shell", "shell_readonly", "load_skill"],
+  "allowed_tools": ["read_file", "shell_readonly", "load_skill"],
+  "allow_paths": ["<repo>/**"],
+  "deny_paths": ["**/.env", "**/.env.*", "**/.git/**"],
+  "denied_commands": ["rm", "curl", "wget", "sudo", "chmod", "chown"],
+  "max_turns": 40
+}

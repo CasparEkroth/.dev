@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,4 +50,26 @@ BASE_CONTEXT_WINDOW: int = 200_000
 REPO_DIR = Path(__file__).parent.resolve()
 BASE_CONFIG_DIR = REPO_DIR / "scripts/amon/config"
 
-SESSIONS_DIR = BASE_CONFIG_DIR / "sessions"
+#: Overridable so eval runs keep sessions next to the work they describe.
+# memory.py binds SESSIONS_DIR as a default arg — set the env var before import.
+SESSIONS_DIR = Path(
+    os.environ.get("AMON_SESSIONS_DIR", str(BASE_CONFIG_DIR / "sessions"))
+)
+
+#: Per-call default; callers may raise it for long jobs.
+DEFAULT_SHELL_TIMEOUT: int = 30
+
+DEFAULT_MAX_TURNS: int = 30
+
+#: Concurrent child processes spawn_agents will run.
+DEFAULT_MAX_PARALLEL: int = 4
+
+#: Longer tool results are truncated and spilled to TOOL_OUTPUT_DIR.
+MAX_TOOL_OUTPUT_CHARS: int = 20_000
+
+TOOL_OUTPUT_DIR = Path(
+    os.environ.get("AMON_TOOL_OUTPUT_DIR", str(BASE_CONFIG_DIR / "tool_output"))
+)
+
+#: Prompt size at which a run summarizes its own history.
+COMPACT_AT_TOKENS: int = int(BASE_CONTEXT_WINDOW * 0.75)

@@ -29,8 +29,9 @@ are the source of truth, not the prose guides under `docs/amon/`:
 
 Copy a starting point from the sibling `examples/` directory (one level up:
 `../../minimal-agent.json`, `../../agent-with-hooks.json`,
-`../../readonly-planner.json`, `../../hooks/log.sh`, `../../hooks/log.py`)
-rather than writing JSON from scratch.
+`../../readonly-planner.json`, `../../path-restricted-agent.json`,
+`../../hooks/log.sh`, `../../hooks/log.py`) rather than writing JSON from
+scratch.
 
 ## Create / edit an agent
 
@@ -38,23 +39,33 @@ rather than writing JSON from scratch.
 2. Check `references/agent-schema.md` for required fields: `name`,
    `description`, `system_prompt`, `tools`, `allowed_tools`
 3. Only reference known tool names (or `*`) — see the "Known tool names"
-   table in `references/agent-schema.md`
-4. Keep `allowed_tools` a subset of the logical tool set the agent can call
+   table in `references/agent-schema.md` (includes `todo_write`)
+4. Keep `allowed_tools` a subset of the logical tool set the agent can call.
+   Put `todo_write` in `allowed_tools` if multi-step checklists should skip
+   the confirm UI (shipped `default` / `dev` do this)
 5. If `hooks` is set, confirm each path exists (or create the hook first)
 6. If `allowed_skills` is set, confirm the glob resolves to at least the
    intended `SKILL.md` file(s)
 7. `max_turns` must be `> 0`
-8. Write valid JSON — no trailing commas, no comments
-9. Restart amon (or re-run headless) so `READY_AGENTS` reloads
+8. Optional knobs worth setting deliberately: `model`, `max_runtime_s`,
+   `force_first_tool`, `system_prompt_template`, `max_tool_output_chars`
+   (see `references/agent-schema.md`)
+9. Write valid JSON — no trailing commas, no comments
+10. Restart amon (or re-run headless) so `READY_AGENTS` reloads
+11. Headless overrides (not agent JSON): `--session-id`, `--model`,
+    `--max-turns`, `--stream`, plus env `AMON_SESSIONS_DIR` /
+    `AMON_TOOL_OUTPUT_DIR` / `AMON_STREAM` — see `references/cli-flags.md`
 
 ## Create a hook
 
 1. Place the script under `~/.amon/hooks/` or a project-local path
 2. Implement only the documented event env vars (`references/hook-events.md`)
-   — don't invent new ones
-3. Exit 0 on success; finish well under the 30s default timeout
+   — don't invent new ones. Prefer reading the JSON event from stdin; env vars
+   are the compatibility path
+3. Exit 0 on success; finish well under the default `timeout_ms` (10000).
+   Exit 2 from `preToolUse` to block a tool
 4. Wire it into the agent's `hooks` map using the exact JSON event keys:
-   `start`, `stop`, `preToolUse`, `postToolUse`
+   `agentSpawn`, `start`, `stop`, `preToolUse`, `postToolUse`
 5. Trigger the event (send a prompt, run a tool) and verify the side effect
 
 ## Create a skill

@@ -1,9 +1,15 @@
 from contextlib import contextmanager
 from pathlib import Path
 import pprint
+import re
 import sys
 import time
 from uuid import UUID
+
+try:
+    import termios
+except ImportError:  # pragma: no cover - POSIX only
+    termios = None
 
 from rich.console import Console
 from rich.live import Live
@@ -21,6 +27,7 @@ from prompt_toolkit.styles import Style
 from scripts.amon.memory import load_session
 from scripts.amon.tools.agent import Agent
 from scripts.amon.tools.registry import READY_AGENTS
+from scripts.amon.tools.todo import get_todos, render_todos
 from config import BASE_CONTEXT_WINDOW
 
 console = Console()
@@ -28,24 +35,38 @@ console = Console()
 _stderr_console = Console(file=sys.stderr)
 _live: "Live | None" = None
 
+#: Matches one rendered checklist line, e.g. "◐ [in_progress] write tests"
+#: (see scripts.amon.tools.todo.render_todos) — used to pull just the
+#: checklist lines back out of a todo_write tool result string, which may
+#: also contain validation notes ahead of the rendered list.
+_TODO_LINE_RE = re.compile(r"^[○◐✓] \[(?:pending|in_progress|completed)\] .+$")
+
 
 class StatusFooter:
     def __init__(self, context_limit: int = BASE_CONTEXT_WINDOW):
         self.tokens = 0
         self.context_limit = context_limit
         self.context_current = 0
+        self.todo_lines: list[str] = []
 
     def add_tokens(self, n: int) -> None:
         self.tokens += n
 
-    def reset_footer(self, token: bool = False, context: bool = False) -> None:
+    def reset_footer(
+        self, token: bool = False, context: bool = False, todos: bool = False
+    ) -> None:
         if token:
             self.tokens = 0
         if context:
             self.context_current = 0
+        if todos:
+            self.todo_lines = []
 
     def set_context(self, c: int | str) -> None:
         self.context_current = c
+
+    def set_todo_lines(self, lines: list[str]) -> None:
+        self.todo_lines = lines
 
     def render_html(self) -> HTML:
         if isinstance(self.context_current, str):
@@ -58,9 +79,16 @@ class StatusFooter:
                 if self.context_limit
                 else 0.0
             )
-        return HTML(
-            f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
-        )
+        header = f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
+        if not self.todo_lines:
+            return HTML(header)
+        # todo_lines is free-form text a todo_write call wrote — it can
+        # contain "<" / "&" (e.g. "fix List<int> handling"), which HTML()
+        # would otherwise try to parse as markup and raise ExpatError,
+        # crashing the bottom-toolbar render. header's own <b> tags are real
+        # markup and must NOT go through this escaping, so only the
+        # placeholder gets it via .format().
+        return HTML(header + "\n{}").format("\n".join(self.todo_lines))
 
 
 footer = StatusFooter()
@@ -74,7 +102,7 @@ def update_footer(tokens_added: int = 0, context: int | str = 0) -> None:
 
 
 def reste_context() -> None:
-    footer.reset_footer(context=True)
+    footer.reset_footer(context=True, todos=True)
 
 
 def set_context_limit(limit: int) -> None:
@@ -89,6 +117,9 @@ def show_welcome(session_id: UUID) -> None:
             border_style="cyan",
         )
     )
+    existing_todos = get_todos(str(session_id))
+    if existing_todos:
+        footer.set_todo_lines(render_todos(existing_todos).splitlines())
     history = load_session(session_id)
     if history:
         console.print(
@@ -237,8 +268,36 @@ def _format_write(args: dict | list | None) -> str:
     return "\n\n".join(parts) if parts else _format_args(args)
 
 
+def _restore_echo() -> None:
+    """Force local echo + canonical mode back on before a plain input(),
+    and discard any stale bytes already queued on stdin.
+
+    prompt_toolkit's PromptSession (the main "> " prompt) puts the tty in
+    raw/no-echo mode while it owns input, and doesn't always restore it on
+    an abnormal exit (e.g. Ctrl+C during the CPR hang) — that's the masked
+    "password prompt" look. Worse, an unanswered cursor-position query
+    (\x1b[6n) can leave the terminal's reply (\x1b[<row>;<col>R) sitting
+    unread in the input queue; since it has no newline, it silently
+    prepends itself to the next line you type, so a clean "y" arrives as
+    e.g. "\x1b[24;5Ry" and never matches. TCIFLUSH drops that stale input.
+    """
+    if termios is None or not sys.stdin.isatty():
+        return
+    try:
+        fd = sys.stdin.fileno()
+        attrs = termios.tcgetattr(fd)
+        attrs[3] |= termios.ECHO | termios.ICANON
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        termios.tcflush(fd, termios.TCIFLUSH)
+    except termios.error:
+        pass
+
+
 def confirm_tool(name: str, args: dict) -> bool:
-    # Pause Live so questionary and the confirm panel own the terminal cleanly.
+    # Pause Live so the confirm panel owns the terminal cleanly.
+    # Plain input() here, not questionary/prompt_toolkit: prompt_toolkit's
+    # cursor-position (CPR) handshake can race with Live's just-stopped
+    # render thread and leave the tty unable to register keystrokes.
     if name == "write_file":
         formatted = f"[bold yellow]{name}[/bold yellow]\n{_format_write(args)}"
     else:
@@ -253,12 +312,24 @@ def confirm_tool(name: str, args: dict) -> bool:
                 border_style="yellow",
             )
         )
-        return bool(questionary.confirm("Allow?", default=False).ask())
+        _restore_echo()
+        answer = input("Allow? [y/N]: ").strip().lower()
+        return answer == "y"
 
 
-def stream_action(event: str, data: dict) -> None:
+def stream_action(event: str, data: dict, *, console: Console | None = None) -> None:
+    """Render one agent event. Pass console=_stderr_console to keep stdout clean."""
+    out = console if console is not None else globals()["console"]
+
+    def _print(*args, **kwargs) -> None:
+        # Stdout path shares Live with the spinner; stderr does not.
+        if out is globals()["console"]:
+            _ui_print(*args, **kwargs)
+        else:
+            out.print(*args, **kwargs)
+
     if event == "reasoning":
-        _ui_print(
+        _print(
             Panel(
                 Markdown(data.get("content", "")),
                 title="[bold green]Agent[/bold green]",
@@ -272,7 +343,7 @@ def stream_action(event: str, data: dict) -> None:
         else:
             formated = _format_args(data.get("args"))
             body = f"[bold]{data.get('name')}[/bold]\n[dim]{formated}[/dim]"
-        _ui_print(
+        _print(
             Panel(
                 body,
                 title="[cyan]→ Tool[/cyan]",
@@ -281,6 +352,26 @@ def stream_action(event: str, data: dict) -> None:
         )
     elif event == "tool_result":
         content = str(data.get("content", ""))
+        name = data.get("name", "tool")
+        if name == "todo_write":
+            # Keep the bottom-toolbar checklist in sync with every call, not
+            # just what's visible in the scrolling panel below.
+            footer.set_todo_lines(
+                [line for line in content.splitlines() if _TODO_LINE_RE.match(line)]
+            )
+            # Escape first: rendered lines contain literal "[in_progress]" etc,
+            # and Rich's console markup would otherwise parse "[...]" as style
+            # tags and silently swallow the status label.
+            from rich.markup import escape
+
+            _print(
+                Panel(
+                    escape(content),
+                    title="[magenta]☑ Checklist[/magenta]",
+                    border_style="magenta",
+                )
+            )
+            return
         max_len = 600
         if len(content) > max_len:
             content = (
@@ -289,13 +380,18 @@ def stream_action(event: str, data: dict) -> None:
                 + str(len(content))
                 + " chars total)"
             )
-        _ui_print(
+        _print(
             Panel(
                 content,
-                title=f"[dim]← Result from {data.get('name', 'tool')}[/dim]",
+                title=f"[dim]← Result from {name}[/dim]",
                 border_style="dim",
             )
         )
+
+
+def stream_action_stderr(event: str, data: dict) -> None:
+    """Headless streamer: same panels, always on stderr."""
+    stream_action(event, data, console=_stderr_console)
 
 
 def print_response(text: str) -> None:

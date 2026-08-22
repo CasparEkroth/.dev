@@ -6,7 +6,7 @@ from scripts.amon.agent_loop import AgentResult
 from scripts.amon.tools.agent import (
     Agent,
     load_ready_agents,
-    spawn_agents,
+    run_jobs,
 )
 
 
@@ -96,6 +96,256 @@ def test_agent_result_to_dict():
     }
 
 
+def test_agent_new_fields_round_trip(tmp_path):
+    config = {
+        "name": "planner",
+        "description": "A planner",
+        "system_prompt": "You plan.",
+        "tools": ["shell"],
+        "allowed_tools": ["shell"],
+        "max_turns": 60,
+        "force_first_tool": True,
+        "max_runtime_s": 900,
+        "model": "claude-opus-5",
+        "mcp_servers": {
+            "git": {"command": "mcp-server-git", "args": ["--stdio"]},
+            "remote": {"url": "https://mcp.example.com/sse"},
+        },
+    }
+    config_file = tmp_path / "planner.json"
+    config_file.write_text(json.dumps(config))
+
+    agent = Agent.from_file(config_file)
+    assert agent.max_turns == 60
+    assert agent.force_first_tool is True
+    assert agent.max_runtime_s == 900
+    assert agent.model == "claude-opus-5"
+    assert agent.mcp_servers["git"]["command"] == "mcp-server-git"
+    assert agent.mcp_servers["remote"]["url"] == "https://mcp.example.com/sse"
+
+
+def test_agent_new_field_defaults(tmp_path):
+    from config import DEFAULT_MAX_TURNS
+
+    config = {
+        "name": "minimal",
+        "description": "minimal",
+        "system_prompt": "hi",
+        "tools": [],
+        "allowed_tools": [],
+    }
+    config_file = tmp_path / "minimal.json"
+    config_file.write_text(json.dumps(config))
+
+    agent = Agent.from_file(config_file)
+    assert agent.max_turns == DEFAULT_MAX_TURNS
+    assert agent.force_first_tool is False
+    assert agent.max_runtime_s is None
+    assert agent.model is None
+    assert agent.mcp_servers == {}
+    assert agent.allow_paths == []
+    assert agent.deny_paths == []
+    assert agent.denied_commands == []
+
+
+def test_run_task_forwards_new_fields():
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=[],
+        allowed_tools=[],
+        max_turns=42,
+        force_first_tool=True,
+        max_runtime_s=123.0,
+        model="pinned-model",
+        max_tool_output_chars=50_000,
+        mcp_servers={"git": {"command": "mcp-server-git"}},
+    )
+
+    with patch("scripts.amon.tools.agent.run_agent") as run:
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+
+    kwargs = run.call_args.kwargs
+    assert kwargs["max_turns"] == 42
+    assert kwargs["force_first_tool"] is True
+    assert kwargs["max_runtime_s"] == 123.0
+    assert kwargs["model"] == "pinned-model"
+    assert kwargs["max_tool_output_chars"] == 50_000
+    assert kwargs["stream_actions"] is None
+    # mcp_servers is a stub: accepted on the config, not yet wired into a run.
+    assert "mcp_servers" not in kwargs
+
+
+def test_run_task_streams_when_amon_stream_set(monkeypatch):
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=[],
+        allowed_tools=[],
+    )
+    monkeypatch.setenv("AMON_STREAM", "1")
+    with patch("scripts.amon.tools.agent.run_agent") as run:
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+    assert run.call_args.kwargs["stream_actions"] is not None
+
+
+def test_get_registry_does_not_leak_permissions_between_agents():
+    from scripts.amon.tools.registry import get_registry, tool_registry
+
+    permissive = get_registry(tools=["shell"], allowed_tools=["shell"])
+    restrictive = get_registry(tools=["shell"], allowed_tools=[])
+
+    assert permissive["shell"]["requires_confirmation"] is False
+    # The restrictive agent must still confirm, even though a permissive one ran.
+    assert restrictive["shell"]["requires_confirmation"] is True
+    # And the shared global is untouched by either call.
+    assert tool_registry["shell"]["requires_confirmation"] is True
+
+
+def test_get_registry_shares_schema_and_fn():
+    from scripts.amon.tools.registry import get_registry, tool_registry
+
+    entry = get_registry(tools=["shell"], allowed_tools=["shell"])["shell"]
+    assert entry["fn"] is tool_registry["shell"]["fn"]
+    assert entry["schema"] is tool_registry["shell"]["schema"]
+
+
+def test_wildcard_bare_string_normalized_but_not_expanded(tmp_path):
+    """"*" becomes ["*"] at load time, but stays unexpanded.
+
+    Regression for the bug where eager expansion at Agent-load time ran
+    before spawn_agents was registered, so wildcard agents silently never
+    got it. Expansion now happens in get_registry instead (see below).
+    """
+    config = {
+        "name": "a",
+        "description": "d",
+        "system_prompt": "hi",
+        "tools": "*",
+        "allowed_tools": "*",
+    }
+    config_file = tmp_path / "a.json"
+    config_file.write_text(json.dumps(config))
+
+    agent = Agent.from_file(config_file)
+    assert agent.tools == ["*"]
+    assert agent.allowed_tools == ["*"]
+
+
+def test_get_registry_expands_wildcard_at_call_time_including_spawn_agents():
+    from scripts.amon.tools.registry import get_registry, tool_registry
+
+    reg = get_registry(tools=["*"], allowed_tools=["*"])
+    assert set(reg) == set(tool_registry)
+    assert "spawn_agents" in reg
+    assert reg["spawn_agents"]["requires_confirmation"] is False
+
+
+def test_get_registry_selection_rules():
+    from scripts.amon.tools.registry import get_registry
+
+    assert get_registry() == {}
+    assert get_registry(tools=["not_a_tool"]) == {}
+    # No allowed_tools means everything needs confirmation.
+    every = get_registry(tools=["shell", "read_file"])
+    assert set(every) == {"shell", "read_file"}
+    assert all(v["requires_confirmation"] for v in every.values())
+
+
+def test_agent_path_fields_round_trip(tmp_path):
+    config = {
+        "name": "scoped",
+        "description": "scoped",
+        "system_prompt": "hi",
+        "tools": ["read_file", "shell"],
+        "allowed_tools": ["read_file"],
+        "allow_paths": ["/tmp/work/**"],
+        "deny_paths": ["**/.env"],
+        "denied_commands": ["rm", "curl"],
+    }
+    config_file = tmp_path / "scoped.json"
+    config_file.write_text(json.dumps(config))
+
+    agent = Agent.from_file(config_file)
+    assert agent.allow_paths == ["/tmp/work/**"]
+    assert agent.deny_paths == ["**/.env"]
+    assert agent.denied_commands == ["rm", "curl"]
+
+
+def test_get_registry_binds_path_guards_without_schema_leak(tmp_path):
+    from functools import partial
+
+    from scripts.amon.tools.registry import get_registry, tool_registry
+
+    allowed = tmp_path / "ok"
+    allowed.mkdir()
+    (allowed / "f.txt").write_text("hi\n")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope\n")
+
+    reg = get_registry(
+        tools=["read_file", "shell", "load_skill"],
+        allowed_tools=["read_file", "shell", "load_skill"],
+        allow_paths=[str(allowed / "**")],
+        deny_paths=[str(secret)],
+        denied_commands=["rm"],
+    )
+
+    # Guards must not appear in the model-facing schema.
+    for name in ("read_file", "shell"):
+        params = reg[name]["schema"]["function"]["parameters"]["properties"]
+        assert "allow_paths" not in params
+        assert "deny_paths" not in params
+        assert "denied_commands" not in params
+
+    # load_skill is left untouched (no path/command partial).
+    assert reg["load_skill"]["fn"] is tool_registry["load_skill"]["fn"]
+
+    assert isinstance(reg["read_file"]["fn"], partial)
+    assert isinstance(reg["shell"]["fn"], partial)
+
+    ok = reg["read_file"]["fn"](path=str(allowed / "f.txt"))
+    assert ok["ok"] is True
+
+    import pytest
+
+    with pytest.raises(PermissionError):
+        reg["read_file"]["fn"](path=str(secret))
+
+    with pytest.raises(PermissionError, match="denied_commands"):
+        reg["shell"]["fn"](command=["rm", "-rf", "x"], cwd=str(allowed))
+
+
+def test_run_task_forwards_path_guards_to_registry():
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=["read_file"],
+        allowed_tools=["read_file"],
+        allow_paths=["/work/**"],
+        deny_paths=["**/.env"],
+        denied_commands=["sudo"],
+    )
+
+    with (
+        patch("scripts.amon.tools.agent.run_agent") as run,
+        patch("scripts.amon.tools.registry.get_registry") as gr,
+    ):
+        gr.return_value = {}
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+
+    kwargs = gr.call_args.kwargs
+    assert kwargs["allow_paths"] == ["/work/**"]
+    assert kwargs["deny_paths"] == ["**/.env"]
+    assert kwargs["denied_commands"] == ["sudo"]
+
+
 def test_headless_payload_single_and_multi():
     from scripts.amon.amon_cli import _headless_payload
 
@@ -111,13 +361,14 @@ def test_headless_payload_single_and_multi():
     assert payload["results"] == multi
 
 
-def test_spawn_agents():
+def test_run_jobs():
     from scripts.amon.tools.registry import READY_AGENTS
 
     seen = {}
 
-    async def async_run_task(task: str, save_session: bool = True):
+    async def async_run_task(task: str, save_session: bool = True, **kwargs):
         seen["save_session"] = save_session
+        seen["kwargs"] = kwargs
         return AgentResult(
             ok=True,
             result="result",
@@ -132,7 +383,7 @@ def test_spawn_agents():
     mock_agent.run_task = async_run_task
     with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
         jobs = [{"agent": "test", "task": "do something"}]
-        results = asyncio.run(spawn_agents(jobs))
+        results = asyncio.run(run_jobs(jobs))
         assert isinstance(results, list)
         assert len(results) == 1
         assert results[0]["ok"] is True
@@ -149,24 +400,22 @@ def test_spawn_agents_save_session_opt_in():
 
     seen = {}
 
-    async def async_run_task(task: str, save_session: bool = True):
+    async def async_run_task(task: str, save_session: bool = True, **kwargs):
         seen["save_session"] = save_session
         return AgentResult(ok=True, result="ok")
 
     mock_agent = MagicMock()
     mock_agent.run_task = async_run_task
     with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
-        asyncio.run(
-            spawn_agents([{"agent": "test", "task": "t", "save_session": True}])
-        )
+        asyncio.run(run_jobs([{"agent": "test", "task": "t", "save_session": True}]))
         assert seen["save_session"] is True
 
 
-def test_spawn_agents_unknown_agent():
+def test_run_jobs_unknown_agent():
     from scripts.amon.tools.registry import READY_AGENTS
 
     with patch.dict(READY_AGENTS, {}, clear=True):
-        results = asyncio.run(spawn_agents([{"agent": "missing", "task": "x"}]))
+        results = asyncio.run(run_jobs([{"agent": "missing", "task": "x"}]))
         assert results[0]["ok"] is False
         assert results[0]["error"] == "Unknown agent: missing"
         assert results[0]["result"] is None
@@ -228,12 +477,17 @@ def test_json_requires_headless():
             resume=False,
             resume_id=None,
             list_sessions=False,
+            list_agents=False,
             delete_session=None,
             keep_N_sessions=None,
             headless=None,
             json=True,
             agent="default",
             save_session=False,
+            session_id=None,
+            model=None,
+            max_turns=None,
+            stream=False,
         ),
     ):
         # argparse.ArgumentParser.error raises SystemExit
@@ -247,19 +501,23 @@ def test_json_requires_headless():
 
 
 def test_spawn_agents_tool_returns_json_string():
-    from scripts.amon.tools.registry import READY_AGENTS, _spawn_agents
+    from scripts.amon.tools.registry import _spawn_agents
 
-    async def async_run_task(task: str, save_session: bool = False):
-        return AgentResult(ok=True, result="hi", tools_used=[])
+    payload = json.dumps({"ok": True, "result": "hi", "error": None}).encode()
 
-    mock_agent = MagicMock()
-    mock_agent.run_task = async_run_task
-    with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
+    class FakeProc:
+        async def communicate(self):
+            return payload, b""
+
+    async def fake_exec(*cmd, **kwargs):
+        return FakeProc()
+
+    with patch("asyncio.create_subprocess_exec", fake_exec):
         raw = _spawn_agents(jobs=[{"agent": "test", "task": "t"}])
-        assert isinstance(raw, str)
-        data = json.loads(raw)
-        assert data[0]["ok"] is True
-        assert data[0]["result"] == "hi"
+    assert isinstance(raw, str)
+    data = json.loads(raw)
+    assert data[0]["ok"] is True
+    assert data[0]["result"] == "hi"
 
 
 def test_spawn_agents_tool_schema_documents_save_session():
@@ -268,5 +526,67 @@ def test_spawn_agents_tool_schema_documents_save_session():
     schema = tool_registry["spawn_agents"]["schema"]["function"]
     props = schema["parameters"]["properties"]["jobs"]["items"]["properties"]
     assert "save_session" in props
+    assert "session_id" in props
+    assert "model" in props
+    assert "max_turns" in props
+    assert "output" in schema["parameters"]["properties"]
     assert "JSON" in schema["description"] or "json" in schema["description"].lower()
     assert "ok" in schema["description"]
+
+
+def test_run_task_resolves_model_and_max_turns_overrides():
+    from scripts.amon.tools.agent import Agent
+
+    agent = Agent(
+        name="t",
+        description="d",
+        system_prompt="s",
+        tools=["shell"],
+        allowed_tools=["shell"],
+        model="agent-model",
+        max_turns=9,
+    )
+    with patch("scripts.amon.tools.agent.run_agent") as run:
+        run.return_value = AgentResult(ok=True, result="ok")
+        asyncio.run(agent.run_task("task", model="job-model", max_turns=3))
+    kwargs = run.call_args.kwargs
+    assert kwargs["model"] == "job-model"
+    assert kwargs["max_turns"] == 3
+
+    with patch("scripts.amon.tools.agent.run_agent") as run:
+        run.return_value = AgentResult(ok=True, result="ok")
+        asyncio.run(agent.run_task("task"))
+    kwargs = run.call_args.kwargs
+    assert kwargs["model"] == "agent-model"
+    assert kwargs["max_turns"] == 9
+
+
+def test_run_jobs_forwards_session_model_max_turns():
+    from scripts.amon.tools.registry import READY_AGENTS
+
+    seen = {}
+
+    async def async_run_task(task: str, save_session: bool = True, **kwargs):
+        seen.update(kwargs)
+        seen["save_session"] = save_session
+        return AgentResult(ok=True, result="ok")
+
+    mock_agent = MagicMock()
+    mock_agent.run_task = async_run_task
+    with patch.dict(READY_AGENTS, {"test": mock_agent}, clear=True):
+        asyncio.run(
+            run_jobs(
+                [
+                    {
+                        "agent": "test",
+                        "task": "t",
+                        "session_id": "sid-1",
+                        "model": "m1",
+                        "max_turns": 7,
+                    }
+                ]
+            )
+        )
+    assert seen["session_id"] == "sid-1"
+    assert seen["model"] == "m1"
+    assert seen["max_turns"] == 7

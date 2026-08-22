@@ -1,17 +1,18 @@
 import argparse
 import asyncio
 import json
+import os
 import sys
 from uuid import UUID, uuid4
 
 from config import settings
-from scripts.amon.tools.agent import spawn_agents
+from scripts.amon.tools.agent import run_jobs
 from scripts.amon.tools.registry import (
     _AGENT_DESCRIPTION_STR,
     get_registry,
     READY_AGENTS,
 )
-from scripts.amon.agent_loop import run_agent
+from scripts.amon.agent_loop import _compact_history, run_agent
 from scripts.amon import terminal
 from scripts.amon.memory import (
     clear_sessions,
@@ -21,7 +22,7 @@ from scripts.amon.memory import (
     remove_session,
     save_session,
 )
-from shared.llm_client import call_llm, get_context_window, parse_llm_json
+from shared.llm_client import get_context_window
 
 from scripts.amon.tools.skills import catalog_for_agent
 
@@ -66,6 +67,25 @@ def main() -> None:
     parser.add_argument("--agent", type=str, default="default")
 
     parser.add_argument("--save-session", action="store_true")
+    parser.add_argument(
+        "--session-id",
+        type=UUID,
+        help="Headless only: use this session id (resume if it exists)",
+    )
+    parser.add_argument(
+        "--model", type=str, default=None, help="Headless only: override agent model"
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Headless only: override agent max turns",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Headless only: stream tool calls/results to stderr",
+    )
 
     args = parser.parse_args()
 
@@ -86,6 +106,16 @@ def main() -> None:
 
     if args.save_session and not args.headless:
         parser.error("--save-session requires --headless")
+    if args.session_id is not None and not args.headless:
+        parser.error("--session-id requires --headless")
+    if args.model is not None and not args.headless:
+        parser.error("--model requires --headless")
+    if args.max_turns is not None and not args.headless:
+        parser.error("--max-turns requires --headless")
+    if args.stream and not args.headless:
+        parser.error("--stream requires --headless")
+    if args.stream:
+        os.environ["AMON_STREAM"] = "1"
 
     if args.list_sessions:
         sessions = _sorted_sessions()
@@ -123,17 +153,18 @@ def main() -> None:
             # --json: spinner on stderr so stdout stays pipe-clean.
             # pretty headless: spinner on stdout with the result panels.
             with terminal.spinner_context(stderr=bool(args.json)):
-                results = asyncio.run(
-                    spawn_agents(
-                        [
-                            {
-                                "agent": args.agent,
-                                "task": args.headless,
-                                "save_session": args.save_session,
-                            }
-                        ]
-                    )
-                )
+                job = {
+                    "agent": args.agent,
+                    "task": args.headless,
+                    "save_session": args.save_session,
+                }
+                if args.session_id is not None:
+                    job["session_id"] = args.session_id
+                if args.model is not None:
+                    job["model"] = args.model
+                if args.max_turns is not None:
+                    job["max_turns"] = args.max_turns
+                results = asyncio.run(run_jobs([job]))
         except Exception as e:
             results = [
                 {
@@ -219,18 +250,20 @@ def _run_interactive(args) -> None:
             if not conversation:
                 terminal.console.print("[dim]Session is empty.[/dim]")
                 continue
+            # Same path the auto-compactor uses: strips any dangling
+            # tool_calls first and only summarizes the safe head, keeping the
+            # most recent complete tool cycle verbatim — the plain
+            # compact_conversation() call this replaced had neither
+            # protection and could silently drop in-flight tool state.
             with terminal.spinner_context():
-                response = call_llm(
-                    f"summarize this conversation {conversation} return the summary as a json in the same structure as the original but significant smaller."
-                )
-            new_conversation = parse_llm_json(response)
-            if new_conversation is None:
+                ok = _compact_history(conversation)
+            if not ok:
                 terminal.console.print(
                     "[red]Compact failed: model did not return valid JSON.[/red]"
                 )
                 continue
             save_session(
-                conversation=new_conversation,
+                conversation=conversation,
                 session_id=session_id,
                 override=True,
             )
@@ -250,7 +283,12 @@ def _run_interactive(args) -> None:
                     system_prompt=agent.system_prompt,
                     user_input=user_input,
                     tool_registry=get_registry(
-                        tools=agent.tools, allowed_tools=agent.allowed_tools
+                        tools=agent.tools,
+                        allowed_tools=agent.allowed_tools,
+                        allow_paths=agent.allow_paths,
+                        deny_paths=agent.deny_paths,
+                        denied_commands=agent.denied_commands,
+                        session_id=session_id,
                     ),
                     skill_catalog=catalog_for_agent(agent.allowed_skills),
                     confirm_fn=terminal.confirm_tool,
@@ -259,12 +297,25 @@ def _run_interactive(args) -> None:
                     session_id=session_id,
                     save_session_=True,
                     hooks=agent.hooks,
+                    max_turns=agent.max_turns,
+                    force_first_tool=agent.force_first_tool,
+                    max_runtime_s=agent.max_runtime_s,
+                    model=agent.model,
+                    system_prompt_template=agent.system_prompt_template,
+                    max_tool_output_chars=agent.max_tool_output_chars,
                 )
             except KeyboardInterrupt:
                 # Hard cancel: in-flight HTTP is aborted; no delayed receive.
                 # ESC is not handled — only Ctrl+C raises KeyboardInterrupt.
                 terminal.console.print("\n[yellow]Interrupted.[/yellow]")
                 continue
+
+            # Clear the live checklist once the task is actually done — a
+            # failed/interrupted run keeps it, since the leftover state (e.g.
+            # what was still 'in_progress') is useful context for why it
+            # stopped there. Only a clean finish resets the footer.
+            if result.ok:
+                terminal.footer.reset_footer(todos=True)
 
             # Streaming already showed content; surface structured failure meta.
             if not result.ok:
