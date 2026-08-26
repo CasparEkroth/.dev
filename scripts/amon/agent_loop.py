@@ -292,7 +292,9 @@ def run_agent(
     # replies leaves an incomplete cycle on disk. Sending that straight to
     # the API breaks the request; stripping it here is a no-op for any
     # session that ended cleanly.
-    history = _strip_unfinished_tool_turns(load_session(session_id)) if session_id else []
+    history = (
+        _strip_unfinished_tool_turns(load_session(session_id)) if session_id else []
+    )
     conversation = history + [{"role": "user", "content": user_input}]
     new_messages = [{"role": "user", "content": user_input}]
 
@@ -537,12 +539,6 @@ def run_agent(
     )
 
 
-def _cli_confirm(tool_name: str, args: dict) -> bool:
-    print(f"\n⚠️  Agent wants to call: {tool_name}({args})")
-    answer = input("Allow? [y/N]: ").strip().lower()
-    return answer == "y"
-
-
 #: Placeholders: {prompt}, {workspace}, {skills}. An agent can replace this via
 #: `system_prompt_template` — e.g. to drop the load_skill mandate. Literal braces
 #: in a custom template must be doubled.
@@ -559,9 +555,12 @@ cwd from a skill's path.
 ## Available Skills
 {skills}
 
-When the user's request matches one of the above skills, your FIRST tool call \
-MUST be `load_skill(skill_path=<path>)` using the skill_path shown. Do not run \
-any shell commands or read any files before loading the skill."""
+When the user's request matches one of the above skills, load it with \
+`load_skill(skill_path=<path>)` before following any of its instructions — do \
+not run shell commands or read files as part of that skill's workflow until \
+it's loaded. This doesn't have to be your very first tool call of the turn \
+(e.g. setting up a checklist first is fine); it must come before you start \
+acting on the skill itself."""
 
 
 def build_system_prompt(

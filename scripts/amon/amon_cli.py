@@ -229,7 +229,7 @@ def _run_interactive(args) -> None:
         if user_input == ("/agent"):
             t_agent = terminal.pick_agents()
             if t_agent is None or t_agent == "[cancel]":
-                terminal.console.print("[dim]No agent picket.[/dim]")
+                terminal.console.print("[dim]No agent picked.[/dim]")
                 terminal.console.print(f"[dim]Current agent: {agent.name}")
                 continue
             agent = READY_AGENTS.get(t_agent)
@@ -241,7 +241,7 @@ def _run_interactive(args) -> None:
 
         if user_input == "/new":
             session_id = uuid4()
-            terminal.reste_context()
+            terminal.reset_context()
             terminal.console.print("[dim]New session started.[/dim]")
             continue
 

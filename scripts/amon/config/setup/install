@@ -3,7 +3,7 @@
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
-#adding agnets
+#adding agents
 mkdir -p "$HOME/.amon/agents"
 mkdir -p "$HOME/.amon/skills"
 
@@ -33,7 +33,7 @@ cat > "$HOME/.amon/agents/planner.json" << 'EOF'
 }
 EOF
 
-echo "Created $HOME/.amon/agnets/planner.json"
+echo "Created $HOME/.amon/agents/planner.json"
 
 cat > "$HOME/.amon/agents/dev.json" << 'EOF'
 {
@@ -76,10 +76,10 @@ cat > "$HOME/.amon/hooks/log.sh" << 'EOF'
 LOG_FILE="${CWD:-.}/agent.log"
 TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
-if [ [! -f $LOG_FILE ] ]; then
-    touch $LOG_FILE
+if [ ! -f "$LOG_FILE" ]; then
+    touch "$LOG_FILE"
 fi
-    
+
 
 {
   echo "========== hook log =========="

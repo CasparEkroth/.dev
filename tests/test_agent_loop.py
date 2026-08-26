@@ -937,6 +937,20 @@ class TestSystemPromptTemplate:
         assert "s1" in out and "does things" in out
         assert "load_skill" in out
 
+    def test_skill_mandate_does_not_demand_first_tool_call(self):
+        # Regression: the old wording ("your FIRST tool call MUST be
+        # load_skill...") directly contradicted default/dev's own
+        # "call todo_write ... before your first other tool call" rule
+        # whenever both applied to the same request.
+        out = build_system_prompt(
+            "call todo_write with the full checklist before your first "
+            "other tool call",
+            self.CATALOG,
+        )
+        assert "FIRST tool call MUST be" not in out
+        assert "before your first other tool call" in out
+        assert "load_skill" in out
+
     def test_custom_template_can_drop_the_mandate(self):
         out = build_system_prompt("BASE", self.CATALOG, "{prompt}\n\nSkills:\n{skills}")
         assert "load_skill" not in out

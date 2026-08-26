@@ -1,6 +1,12 @@
 import unittest
 
-from scripts.amon.terminal import _TODO_LINE_RE, StatusFooter
+from scripts.amon.terminal import (
+    _TODO_LINE_RE,
+    StatusFooter,
+    footer,
+    reset_context,
+    update_footer,
+)
 from scripts.amon.tools.todo import write_todos
 
 
@@ -47,6 +53,37 @@ class TestStatusFooterTodos(unittest.TestCase):
         footer = StatusFooter()
         footer.set_todo_lines(["○ [pending] a"])
         self.assertIn("<b>", str(footer.render_html()))
+
+
+class TestModuleFooterHelpers(unittest.TestCase):
+    """update_footer/reset_context operate on the module-level `footer`
+    singleton, so each test resets it to avoid leaking into others."""
+
+    def tearDown(self):
+        footer.reset_footer(token=True, context=True, todos=True)
+
+    def test_update_footer_context_zero_actually_sets_zero(self):
+        # Regression: `if context:` treated an explicit 0 the same as "not
+        # provided," so context could never actually be set to 0. Callers
+        # now signal "don't touch it" with the None default instead.
+        footer.set_context(42)
+        update_footer(context=0)
+        self.assertEqual(footer.context_current, 0)
+
+    def test_update_footer_no_context_arg_leaves_it_untouched(self):
+        footer.set_context(42)
+        update_footer(tokens_added=5)
+        self.assertEqual(footer.context_current, 42)
+        self.assertEqual(footer.tokens, 5)
+
+    def test_reset_context_clears_context_and_todos_not_tokens(self):
+        footer.add_tokens(10)
+        footer.set_context(99)
+        footer.set_todo_lines(["✓ [completed] a"])
+        reset_context()
+        self.assertEqual(footer.context_current, 0)
+        self.assertEqual(footer.todo_lines, [])
+        self.assertEqual(footer.tokens, 10)
 
 
 class TestTodoLineExtraction(unittest.TestCase):

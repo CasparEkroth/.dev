@@ -85,6 +85,14 @@ class TestMemoryFunctions(unittest.TestCase):
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0][0].name, str(self.session_id))
 
+    def test_get_list_of_sessions_ignores_non_uuid_stray_files(self):
+        save_session(self.conversation, self.session_id, self.temp_dir)
+        (self.temp_dir / "notes.txt").write_text("not a session")
+        (self.temp_dir / ".DS_Store").write_text("")
+        sessions = get_list_of_sessions(self.temp_dir)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0][0].name, str(self.session_id))
+
     def test_remove_session_also_removes_todos_sidecar(self):
         save_session(self.conversation, self.session_id, self.temp_dir)
         save_todos(

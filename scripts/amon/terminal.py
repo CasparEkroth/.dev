@@ -79,7 +79,9 @@ class StatusFooter:
                 if self.context_limit
                 else 0.0
             )
-        header = f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
+        header = (
+            f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
+        )
         if not self.todo_lines:
             return HTML(header)
         # todo_lines is free-form text a todo_write call wrote — it can
@@ -94,14 +96,14 @@ class StatusFooter:
 footer = StatusFooter()
 
 
-def update_footer(tokens_added: int = 0, context: int | str = 0) -> None:
+def update_footer(tokens_added: int = 0, context: int | str | None = None) -> None:
     if tokens_added:
         footer.add_tokens(tokens_added)
-    if context:
+    if context is not None:
         footer.set_context(context)
 
 
-def reste_context() -> None:
+def reset_context() -> None:
     footer.reset_footer(context=True, todos=True)
 
 
@@ -417,7 +419,7 @@ def print_sessions(sessions: list[tuple[Path, float]]) -> None:
 
 def pick_agents(agents: dict[str, Agent] = READY_AGENTS) -> str | None:
     if not agents:
-        console.print("[dim]No Agnets found.[/dim]")
+        console.print("[dim]No agents found.[/dim]")
         return None
     choices = [
         questionary.Choice(

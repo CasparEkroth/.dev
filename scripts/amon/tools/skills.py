@@ -68,9 +68,6 @@ def build_skill_catalog(
     return catalog
 
 
-skill_catalog = build_skill_catalog()
-
-
 def load_skill(skill_path: Path | str) -> str:
     path = Path(skill_path)
     cwd = Path.cwd()

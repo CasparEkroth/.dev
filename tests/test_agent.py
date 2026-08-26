@@ -75,6 +75,53 @@ def test_load_ready_agents(tmp_path, monkeypatch):
         assert agents["mock_agent"].name == "mock_agent"
 
 
+def test_load_ready_agents_warns_on_name_stem_mismatch(tmp_path, monkeypatch, caplog):
+    from pathlib import Path
+
+    agents_dir = tmp_path / ".amon" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "renamed_file.json").write_text(
+        json.dumps(
+            {
+                "name": "original_name",
+                "description": "mock",
+                "system_prompt": "hi",
+                "tools": [],
+                "allowed_tools": [],
+            }
+        )
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    missing = tmp_path / "missing-agents"
+    with (patch("scripts.amon.tools.agent.Path") as path_cls,):
+        real_path = Path
+
+        def ctor(arg=None):
+            if arg is None:
+                return real_path()
+            if arg == "/etc/.amon/agents":
+                return missing
+            return real_path(arg)
+
+        path_cls.side_effect = ctor
+        path_cls.home.return_value = missing
+        path_cls.cwd.return_value = tmp_path
+
+        with caplog.at_level("WARNING"):
+            agents = load_ready_agents()
+
+    # Filename stem still wins as the map key...
+    assert "renamed_file" in agents
+    assert agents["renamed_file"].name == "original_name"
+    # ...but the mismatch is surfaced instead of silently swallowed.
+    assert any(
+        "renamed_file" in r.getMessage() and "original_name" in r.getMessage()
+        for r in caplog.records
+    )
+
+
 def test_agent_result_to_dict():
     result = AgentResult(
         ok=True,
@@ -215,7 +262,7 @@ def test_get_registry_shares_schema_and_fn():
 
 
 def test_wildcard_bare_string_normalized_but_not_expanded(tmp_path):
-    """"*" becomes ["*"] at load time, but stays unexpanded.
+    """ "*" becomes ["*"] at load time, but stays unexpanded.
 
     Regression for the bug where eager expansion at Agent-load time ran
     before spawn_agents was registered, so wildcard agents silently never

@@ -140,9 +140,20 @@ def load_ready_agents() -> dict[str, Agent]:
         if path.is_dir():
             for f in path.glob("*.json"):
                 try:
-                    agents[f.stem] = Agent.from_file(f)
+                    agent = Agent.from_file(f)
                 except Exception as exc:  # FileNotFound, JSON, Validation, etc.
                     logger.warning("Skipping agent %s: %s", f.name, exc)
+                    continue
+                if agent.name != f.stem:
+                    logger.warning(
+                        "Agent file %s has name %r but is keyed as %r "
+                        "(--agent %r / spawn_agents will use the filename stem)",
+                        f.name,
+                        agent.name,
+                        f.stem,
+                        f.stem,
+                    )
+                agents[f.stem] = agent
     return agents
 
 

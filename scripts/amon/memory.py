@@ -6,7 +6,7 @@ from config import SESSIONS_DIR
 
 def save_session(
     conversation: list[dict],
-    session_id: UUID = None,
+    session_id: UUID | None = None,
     session_dir: Path = SESSIONS_DIR,
     override: bool = False,
 ) -> UUID:
@@ -82,15 +82,24 @@ def load_todos(session_id: UUID | str, session_dir: Path = SESSIONS_DIR) -> list
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _is_session_file(p: Path) -> bool:
+    """A session transcript's filename is exactly its UUID — nothing else."""
+    if p.name.endswith(".meta.json") or p.name.endswith(".todos.json"):
+        return False
+    try:
+        UUID(p.name)
+    except ValueError:
+        return False
+    return True
+
+
 def get_list_of_sessions(
     session_dir: Path = SESSIONS_DIR,
 ) -> list[tuple[Path, float]]:
     if not session_dir.exists():
         return []
     return [
-        (p, p.stat().st_mtime)
-        for p in session_dir.iterdir()
-        if not p.name.endswith(".meta.json") and not p.name.endswith(".todos.json")
+        (p, p.stat().st_mtime) for p in session_dir.iterdir() if _is_session_file(p)
     ]
 
 
@@ -105,10 +114,10 @@ def remove_session(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> bool:
         return False
 
 
-def clear_sessions(keep_conut: int = 5) -> list[tuple[Path, float]]:
+def clear_sessions(keep_count: int = 5) -> list[tuple[Path, float]]:
     sessions = get_list_of_sessions()
     sessions.sort(key=lambda x: x[1], reverse=True)
-    rm_ses = sessions[keep_conut:]
+    rm_ses = sessions[keep_count:]
     for s in rm_ses:
         remove_session(s[0].name)
     return rm_ses
