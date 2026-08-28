@@ -62,12 +62,18 @@ def read_file(
             "ok": False,
         }
     lines = content.splitlines()
+    total_lines = len(lines)
 
     # Tool schema is 1-based inclusive; convert to 0-based slice indices.
     start = max(start_line - 1, 0) if start_line else 0
-    end = end_line if end_line else len(lines)
+    end = end_line if end_line else total_lines
     return {
         "ok": True,
+        "path": abspath,
+        # 1-based range actually returned (end clamped to file length).
+        "start_line": start + 1,
+        "end_line": min(end, total_lines),
+        "total_lines": total_lines,
         "content": lines[start:end],
     }
 

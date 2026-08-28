@@ -111,7 +111,12 @@ tool_registry = {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a section off a file",
+                "description": (
+                    "Read a section off a file. Returns 'total_lines' (the "
+                    "file's full line count) alongside 'content' — check it "
+                    "instead of guessing whether you're near the end of the "
+                    "file before requesting another chunk."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {

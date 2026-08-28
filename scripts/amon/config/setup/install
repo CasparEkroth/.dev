@@ -15,6 +15,7 @@ cat > "$HOME/.amon/agents/default.json" << 'EOF'
   "tools": ["*"],
   "allowed_tools": ["shell_readonly", "read_file", "load_skill", "spawn_agents", "todo_write"],
   "allowed_skills": ["skill://~/.amon/skills/*/SKILL.md"],
+  "denied_commands": ["sudo", "dd", "mkfs"],
   "max_turns": 100,
   "max_runtime_s": 1200
 }
@@ -43,6 +44,7 @@ cat > "$HOME/.amon/agents/dev.json" << 'EOF'
   "tools": ["*"],
   "allowed_tools": ["shell_readonly", "read_file", "load_skill", "spawn_agents", "todo_write"],
   "allowed_skills": ["skill://~/.amon/skills/*/SKILL.md"],
+  "denied_commands": ["sudo", "dd", "mkfs"],
   "max_turns": 150,
   "max_runtime_s": 1800
 }

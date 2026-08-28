@@ -1,7 +1,11 @@
 import subprocess
 
 from config import DEFAULT_SHELL_TIMEOUT
-from shared.path_guard import check_command_allowed, check_path_access
+from shared.path_guard import (
+    check_command_allowed,
+    check_no_traversal_in_args,
+    check_path_access,
+)
 
 READONLY_COMMANDS = {
     "ls",
@@ -12,7 +16,15 @@ READONLY_COMMANDS = {
     "pwd",
     "git",
 }
-READONLY_GIT_SUBCOMMANDS = {"status", "log", "diff", "show", "branch"}
+READONLY_GIT_SUBCOMMANDS = {
+    "status",
+    "log",
+    "diff",
+    "show",
+    "branch",
+    "blame",
+    "rev-parse",
+}
 
 
 def _as_text(stream: str | bytes | None) -> str:
@@ -38,15 +50,15 @@ def shell_readonly(
     shell string would bypass. Agent path/command guards (when configured)
     layer on top of the whitelist — both must pass.
 
-    Path checks only cover ``cwd``. A permitted command can still read paths
-    outside ``allow_paths`` via absolute args; full containment needs OS
-    sandboxing and is out of scope.
+    Path checks cover ``cwd``, plus a reject of ``..`` in any argument when
+    ``allow_paths`` is set. Absolute path arguments are not rejected.
     """
     if not command:
         raise ValueError("Empty command")
 
     check_path_access(cwd, allow_paths=allow_paths, deny_paths=deny_paths)
     check_command_allowed(command, denied_commands=denied_commands)
+    check_no_traversal_in_args(command, allow_paths=allow_paths)
 
     cmd = command[0]
     if cmd not in READONLY_COMMANDS:
@@ -86,13 +98,14 @@ def run_shell(
     shell string has no argv boundary, so prefer a list.
 
     When agent guards are configured, ``cwd`` is checked against
-    ``allow_paths`` / ``deny_paths`` and command-position names against
+    ``allow_paths`` / ``deny_paths``, command-position names against
     ``denied_commands`` (including after ``&&`` / ``;`` / ``|`` in shell
-    strings). This is a guardrail, not a sandbox: a permitted binary can still
-    touch paths outside the allow tree via absolute paths or ``cd``.
+    strings), and every argument for a ``..`` path segment when
+    ``allow_paths`` is set. Absolute path arguments are not rejected.
     """
     check_path_access(cwd, allow_paths=allow_paths, deny_paths=deny_paths)
     check_command_allowed(command, denied_commands=denied_commands)
+    check_no_traversal_in_args(command, allow_paths=allow_paths)
 
     shell = shell or isinstance(command, str)
     if shell and isinstance(command, list):

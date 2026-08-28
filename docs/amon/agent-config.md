@@ -83,15 +83,19 @@ Enforcement points:
   boundary: those tools never shell out.
 - `shell` / `shell_readonly` — `cwd` is checked against path rules, and
   command-position names against `denied_commands`. `shell_readonly` still
-  applies its existing whitelist on top.
+  applies its existing whitelist on top. When `allow_paths` is set, every
+  argument is also checked for a literal `..` path segment and rejected if
+  found. Absolute path arguments are not rejected.
 
-**Known limitation (load-bearing):** path/command restriction on `shell` can
-only cover `cwd` and the literal command name(s). A permitted command can still
-read/write paths outside any `allow_paths` tree via absolute paths or `cd`
-inside the same invocation (e.g. `cat /etc/passwd`, `cd / && rm -rf whatever`).
-Full containment needs OS-level sandboxing (container, chroot, bwrap), which is
-out of scope. Treat `allow_paths` + `denied_commands` as a **guardrail against
-accidental damage**, not a security sandbox for `shell`.
+**Known limitation:** path/command restriction on `shell` covers `cwd`, the
+literal command name(s), and (when `allow_paths` is set) a `..` check on
+arguments. A permitted command can still read/write paths outside any
+`allow_paths` tree via an absolute path or `cd` inside the same invocation
+(e.g. `cat /etc/passwd`, `cd / && rm -rf whatever`). Full containment needs
+OS-level sandboxing (container, chroot, bwrap), which is out of scope. Treat
+`allow_paths` + `denied_commands` as a guardrail against accidental damage,
+not a security sandbox for `shell`. The shipped `default`/`dev` agents deny
+`sudo`/`dd`/`mkfs` by default.
 
 Example: [examples/path-restricted-agent.json](examples/path-restricted-agent.json).
 
@@ -123,7 +127,17 @@ Notable tool behaviour:
   expires the output captured so far is returned instead of lost. A shell
   string has no argv boundary, so prefer a list unless shell features are
   needed. `shell_readonly` takes `timeout` too, but no shell string — its
-  whitelist is enforced on `command[0]`.
+  whitelist (`ls`, `grep`, `find`, `wc`, `tree`, `pwd`, `git`) is enforced on
+  `command[0]`; `git`'s subcommand is further restricted to
+  `status`/`log`/`diff`/`show`/`branch`/`blame`/`rev-parse`, and `find -exec`
+  is blocked. `rg` and `fd` are not whitelisted.
+- `read_file` returns `path`, `start_line`, `end_line`, `total_lines`
+  alongside `content`. `start_line`/`end_line` are the range actually served
+  (end clamped to the file's length); `total_lines` is the full file length.
+- `load_skill` excludes directories listed in `EXCLUDED_DIRS` (`.git`,
+  `__pycache__`, `node_modules`, `.venv`, ...) from the resource list, and
+  caps it at `RESOURCE_LIST_CAP` (200) entries with a trailing
+  "N more not shown" note when truncated.
 - `write_file` creates a file (and any missing parent directories) when the
   `path` does not exist, `old` is empty and `new` holds the content. For an
   existing file an empty `old` appends; otherwise the first occurrence of

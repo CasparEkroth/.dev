@@ -253,6 +253,27 @@ class TestReadFile(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["content"], ["line2", "line3"])
 
+    def test_envelope_has_path_and_total_lines(self):
+        import os
+
+        result = read_file(str(self.path))
+        self.assertEqual(result["path"], os.path.abspath(str(self.path)))
+        self.assertEqual(result["total_lines"], 4)
+        self.assertEqual(result["start_line"], 1)
+        self.assertEqual(result["end_line"], 4)
+
+    def test_envelope_reflects_the_requested_slice(self):
+        result = read_file(str(self.path), start_line=2, end_line=3)
+        self.assertEqual(result["start_line"], 2)
+        self.assertEqual(result["end_line"], 3)
+        self.assertEqual(result["total_lines"], 4)
+
+    def test_end_line_past_total_is_clamped(self):
+        result = read_file(str(self.path), start_line=3, end_line=999)
+        self.assertEqual(result["end_line"], 4)
+        self.assertEqual(result["total_lines"], 4)
+        self.assertEqual(result["content"], ["line3", "line4"])
+
 
 class TestPathGuards(unittest.TestCase):
     def setUp(self):
