@@ -12,7 +12,7 @@ from scripts.amon.tools.registry import (
     get_registry,
     READY_AGENTS,
 )
-from scripts.amon.agent_loop import _compact_history, run_agent
+from scripts.amon.agent_loop import _compact_history, file_event_log, run_agent
 from scripts.amon import terminal
 from scripts.amon.memory import (
     clear_sessions,
@@ -303,6 +303,8 @@ def _run_interactive(args) -> None:
                     model=agent.model,
                     system_prompt_template=agent.system_prompt_template,
                     max_tool_output_chars=agent.max_tool_output_chars,
+                    agent_name=agent.name,
+                    event_log=file_event_log if os.environ.get("AMON_EVENTS") else None,
                 )
             except KeyboardInterrupt:
                 # Hard cancel: in-flight HTTP is aborted; no delayed receive.

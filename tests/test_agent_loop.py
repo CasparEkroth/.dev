@@ -770,6 +770,167 @@ class TestSanitizeHistoryOnLoad:
 # ------------------------------------------------------- todo resume/inject
 
 
+class TestEventLog:
+    """Optional structured event log (AMON_EVENTS) — off unless a caller
+    passes event_log, and never touches time.monotonic when it's None."""
+
+    def test_turn_and_tool_events_are_logged(self):
+        events = []
+        _run(
+            [_response(tool_calls=_tool_call()), _response(content="done")],
+            registry=_registry(lambda **kw: "ok"),
+            event_log=events.append,
+        )
+        kinds = [e["event"] for e in events]
+        assert kinds.count("turn") == 2
+        assert "tool_call" in kinds
+        assert "tool_result" in kinds
+
+    def test_turn_event_has_latency_and_usage(self):
+        events = []
+        _run(
+            [_response(content="done", prompt_tokens=7, completion_tokens=3)],
+            registry=_registry(lambda **kw: "ok"),
+            event_log=events.append,
+        )
+        turn_events = [e for e in events if e["event"] == "turn"]
+        assert len(turn_events) == 1
+        assert turn_events[0]["usage"]["prompt_tokens"] == 7
+        assert isinstance(turn_events[0]["latency_s"], float)
+
+    def test_tool_result_event_has_output_chars(self):
+        events = []
+        _run(
+            [_response(tool_calls=_tool_call()), _response(content="done")],
+            registry=_registry(lambda **kw: "a real result"),
+            event_log=events.append,
+        )
+        result_events = [e for e in events if e["event"] == "tool_result"]
+        assert len(result_events) == 1
+        assert result_events[0]["output_chars"] == len("a real result")
+        assert result_events[0]["name"] == "echo"
+
+    def test_compact_event_logged_on_threshold_trigger(self):
+        events = []
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = [{"role": "user", "content": "summary"}]
+            _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+                compact_at_tokens=1,
+                event_log=events.append,
+            )
+        compact_events = [e for e in events if e["event"] == "compact"]
+        assert len(compact_events) == 1
+        assert compact_events[0]["trigger"] == "threshold"
+        assert compact_events[0]["method"] == "summary"
+
+    def test_events_carry_session_id_when_present(self):
+        events = []
+        sid = uuid4()
+        with (
+            patch("scripts.amon.agent_loop.load_session", return_value=[]),
+            patch("scripts.amon.agent_loop.save_session", return_value=sid),
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=True,
+                headless=True,
+                session_id=sid,
+                event_log=events.append,
+            )
+        assert all(e["session_id"] == str(sid) for e in events)
+
+    def test_monotonic_not_called_extra_times_when_event_log_is_none(self):
+        # Regression: adding timing must not perturb time.monotonic call
+        # counts for anything mocking the clock (e.g. TestBudgets below).
+        clock = iter([0.0, 0.0, 99.0])
+        responses = [
+            _response(content="working", tool_calls=_tool_call()) for _ in range(5)
+        ]
+        with patch("scripts.amon.agent_loop.time.monotonic", lambda: next(clock)):
+            result, _ = _run(
+                responses,
+                registry=_registry(lambda **kw: "ok"),
+                max_turns=5,
+                max_runtime_s=10,
+            )
+        assert not result.ok
+        assert "Time budget" in result.error
+
+
+class TestSessionInfo:
+    """A new session records {agent, preview} once, for /sessions and
+    --resume; a resumed session doesn't re-save it on every turn."""
+
+    def test_new_session_saves_agent_and_preview(self):
+        sid = uuid4()
+        with (
+            patch("scripts.amon.agent_loop.load_session", return_value=[]),
+            patch("scripts.amon.agent_loop.save_session", return_value=sid),
+            patch("scripts.amon.agent_loop.save_session_info") as save_info,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="fix the login bug please",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=True,
+                headless=True,
+                session_id=sid,
+                agent_name="dev",
+            )
+        save_info.assert_called_once()
+        assert save_info.call_args.args[0] == sid
+        assert save_info.call_args.kwargs["agent"] == "dev"
+        assert "fix the login bug" in save_info.call_args.kwargs["preview"]
+
+    def test_resumed_session_does_not_resave_info(self):
+        with (
+            patch("scripts.amon.agent_loop.load_session") as load,
+            patch("scripts.amon.agent_loop.save_session", return_value=uuid4()),
+            patch("scripts.amon.agent_loop.save_session_info") as save_info,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            load.return_value = [{"role": "user", "content": "earlier"}]
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="continue please",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=True,
+                headless=True,
+                session_id=uuid4(),
+                agent_name="dev",
+            )
+        save_info.assert_not_called()
+
+    def test_no_session_id_never_saves_info(self):
+        with (
+            patch("scripts.amon.agent_loop.save_session_info") as save_info,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=False,
+                headless=True,
+                agent_name="dev",
+            )
+        save_info.assert_not_called()
+
+
 class TestTodoResumeInjection:
     """A resumed session with a saved checklist should see it again."""
 
@@ -857,6 +1018,112 @@ class TestTodoResumeInjection:
 # -------------------------------------------------------- bad tool calls
 
 
+class TestConfirmationOutcomes:
+    """confirm_fn may return a bare bool or (allowed, reason).
+
+    Uses run_agent directly with headless=False: the _run() helper always
+    forces headless=True, which short-circuits before confirm_fn is ever
+    called (see TestHeadlessShortCircuitsConfirm below) — not useful here.
+    """
+
+    def _registry_confirmable(self, fn):
+        return {
+            "echo": {
+                "schema": {"type": "function", "function": {"name": "echo"}},
+                "fn": fn,
+                "requires_confirmation": True,
+            }
+        }
+
+    def _run_interactive_style(self, responses, registry, confirm_fn):
+        with patch("scripts.amon.agent_loop.call_llm_with_tools") as llm:
+            llm.side_effect = responses
+            result = run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry=registry,
+                skill_catalog=[],
+                save_session_=False,
+                headless=False,
+                confirm_fn=confirm_fn,
+                stream_actions=lambda *a, **kw: None,
+            )
+        return result, llm
+
+    def test_bare_bool_true_still_runs_the_tool(self):
+        called = []
+        result, _ = self._run_interactive_style(
+            [_response(tool_calls=_tool_call(name="echo")), _response(content="done")],
+            self._registry_confirmable(lambda **kw: called.append(kw) or "ran"),
+            confirm_fn=lambda name, args: True,
+        )
+        assert called
+        assert result.ok
+
+    def test_bare_bool_false_denies_without_a_reason(self):
+        called = []
+        result, llm = self._run_interactive_style(
+            [
+                _response(tool_calls=_tool_call(name="echo")),
+                _response(content="understood"),
+            ],
+            self._registry_confirmable(lambda **kw: called.append(kw) or "ran"),
+            confirm_fn=lambda name, args: False,
+        )
+        assert called == []
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "User denied permission" in tool_msg["content"]
+        assert "Reason:" not in tool_msg["content"]
+
+    def test_tuple_true_runs_the_tool(self):
+        called = []
+        result, _ = self._run_interactive_style(
+            [_response(tool_calls=_tool_call(name="echo")), _response(content="done")],
+            self._registry_confirmable(lambda **kw: called.append(kw) or "ran"),
+            confirm_fn=lambda name, args: (True, None),
+        )
+        assert called
+        assert result.ok
+
+    def test_tuple_false_with_reason_reaches_the_model(self):
+        called = []
+        result, llm = self._run_interactive_style(
+            [
+                _response(tool_calls=_tool_call(name="echo")),
+                _response(content="understood"),
+            ],
+            self._registry_confirmable(lambda **kw: called.append(kw) or "ran"),
+            confirm_fn=lambda name, args: (False, "not safe to run right now"),
+        )
+        assert called == []
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "User denied permission" in tool_msg["content"]
+        assert "Reason: not safe to run right now" in tool_msg["content"]
+
+
+class TestHeadlessShortCircuitsConfirm:
+    def test_headless_never_calls_confirm_fn(self):
+        confirm_calls = []
+        registry = {
+            "echo": {
+                "schema": {"type": "function", "function": {"name": "echo"}},
+                "fn": lambda **kw: "ran",
+                "requires_confirmation": True,
+            }
+        }
+        result, llm = _run(
+            [_response(tool_calls=_tool_call(name="echo")), _response(content="ok")],
+            registry=registry,
+            confirm_fn=lambda name, args: confirm_calls.append(1) or True,
+        )
+        assert confirm_calls == []
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "headless mode" in tool_msg["content"]
+
+
 class TestBadToolCalls:
     """Unknown names / malformed args must not kill the loop."""
 
@@ -927,6 +1194,24 @@ class TestBadToolCalls:
 # ------------------------------------------------------------ prompt template
 
 
+class TestFileEventLog:
+    def test_delegates_to_append_event_with_the_events_session_id(self):
+        from scripts.amon.agent_loop import file_event_log
+
+        with patch("scripts.amon.agent_loop.append_event") as append:
+            file_event_log({"session_id": "abc-123", "event": "turn"})
+        append.assert_called_once_with(
+            "abc-123", {"session_id": "abc-123", "event": "turn"}
+        )
+
+    def test_drops_events_with_no_session_id(self):
+        from scripts.amon.agent_loop import file_event_log
+
+        with patch("scripts.amon.agent_loop.append_event") as append:
+            file_event_log({"event": "turn", "session_id": None})
+        append.assert_not_called()
+
+
 class TestSystemPromptTemplate:
     CATALOG = SKILL_CATALOG
 
@@ -972,6 +1257,65 @@ class TestSystemPromptTemplate:
             system_prompt_template="ONLY: {prompt}",
         )
         assert llm.call_args_list[0].args[0] == "ONLY: sys"
+
+
+class TestStreamActionsHeadlessOverride:
+    """Regression: operator precedence used to parse `stream_actions =
+    stream_actions or stream_action if not headless else None` as
+    `(stream_actions or stream_action) if not headless else None`, which
+    discarded ANY caller-provided stream_actions whenever headless=True —
+    silently breaking run_task's AMON_STREAM support entirely."""
+
+    def test_caller_stream_actions_is_used_in_headless_mode(self):
+        # _run() already forces headless=True.
+        seen = []
+        _run(
+            [_response(tool_calls=_tool_call()), _response(content="done")],
+            registry=_registry(lambda **kw: "ok"),
+            stream_actions=lambda event, data: seen.append(event),
+        )
+        assert "tool_call" in seen
+        assert "tool_result" in seen
+
+    def test_no_stream_actions_in_headless_mode_stays_silent(self):
+        # Default (no caller override) must still be None in headless mode —
+        # only an explicit override should turn streaming on.
+        with patch("scripts.amon.terminal.stream_action") as default_stream:
+            _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+            )
+        default_stream.assert_not_called()
+
+    def test_default_stream_action_used_when_not_headless_and_no_override(self):
+        with patch("scripts.amon.terminal.stream_action") as default_stream:
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry=_registry(lambda **kw: "ok"),
+                skill_catalog=[],
+                save_session_=False,
+                headless=False,
+                confirm_fn=lambda name, args: True,
+            )
+        default_stream.assert_not_called()  # no tool call in this run
+        # Confirm it's actually wired in by triggering a tool call turn:
+        with patch("scripts.amon.terminal.stream_action") as default_stream:
+            with patch("scripts.amon.agent_loop.call_llm_with_tools") as llm:
+                llm.side_effect = [
+                    _response(tool_calls=_tool_call()),
+                    _response(content="done"),
+                ]
+                run_agent(
+                    system_prompt="sys",
+                    user_input="task",
+                    tool_registry=_registry(lambda **kw: "ok"),
+                    skill_catalog=[],
+                    save_session_=False,
+                    headless=False,
+                    confirm_fn=lambda name, args: True,
+                )
+        assert default_stream.called
 
 
 class TestModelOverride:

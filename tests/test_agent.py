@@ -221,6 +221,7 @@ def test_run_task_forwards_new_fields():
     assert kwargs["model"] == "pinned-model"
     assert kwargs["max_tool_output_chars"] == 50_000
     assert kwargs["stream_actions"] is None
+    assert kwargs["agent_name"] == "a"
     # mcp_servers is a stub: accepted on the config, not yet wired into a run.
     assert "mcp_servers" not in kwargs
 
@@ -552,9 +553,23 @@ def test_spawn_agents_tool_returns_json_string():
 
     payload = json.dumps({"ok": True, "result": "hi", "error": None}).encode()
 
+    class _FakeStream:
+        def __init__(self, data: bytes):
+            self._data = data
+
+        async def read(self):
+            return self._data
+
+        async def readline(self):
+            return b""
+
     class FakeProc:
-        async def communicate(self):
-            return payload, b""
+        def __init__(self):
+            self.stdout = _FakeStream(payload)
+            self.stderr = _FakeStream(b"")
+
+        async def wait(self):
+            return 0
 
     async def fake_exec(*cmd, **kwargs):
         return FakeProc()

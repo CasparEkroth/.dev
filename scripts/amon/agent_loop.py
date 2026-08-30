@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 from uuid import UUID, uuid4
 import os
 import json
@@ -14,7 +15,13 @@ from config import (
     TOOL_OUTPUT_DIR,
 )
 from scripts.amon.hooks import HookEventName, run_hook_event
-from scripts.amon.memory import save_context_tokens, save_session, load_session
+from scripts.amon.memory import (
+    append_event,
+    save_context_tokens,
+    save_session,
+    save_session_info,
+    load_session,
+)
 from scripts.amon.tools.todo import get_todos, render_todos
 from shared.llm_client import call_llm, call_llm_with_tools, parse_llm_json
 
@@ -218,6 +225,25 @@ class AgentResult:
         }
 
 
+def file_event_log(event: dict) -> None:
+    """Default `event_log` sink: append to `{session_id}.events.jsonl`.
+
+    Callers gate this behind `AMON_EVENTS` (same pattern `AMON_STREAM` uses
+    for `stream_action_stderr`) — an event with no session_id (an ephemeral
+    run with nothing to attach it to) is silently dropped rather than
+    raised, since there's nowhere sensible to write it.
+    """
+    session_id = event.get("session_id")
+    if session_id:
+        append_event(session_id, event)
+
+
+def _preview(text: str, limit: int = 60) -> str:
+    """First line of *text*, collapsed and capped, for session listings."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+
+
 def _empty_usage() -> dict[str, int]:
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
@@ -263,6 +289,8 @@ def run_agent(
     compact_at_tokens: int = COMPACT_AT_TOKENS,
     system_prompt_template: str | None = None,
     max_tool_output_chars: int | None = None,
+    agent_name: str | None = None,
+    event_log: Callable[[dict], None] | None = None,
 ) -> AgentResult:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
@@ -275,13 +303,28 @@ def run_agent(
     compact_at_tokens: prompt size at which the history is summarized. Pass a
         large value to disable.
     system_prompt_template: overrides prompt assembly.
+    event_log: optional sink for structured observability events
+        ({"ts", "session_id", "event", ...}, event in "turn" / "tool_call" /
+        "tool_result" / "compact"). None (default) means no logging
+        whatsoever — this is opt-in, not always-on, so a normal run pays no
+        cost. Callers gate it behind AMON_EVENTS, same pattern as
+        AMON_STREAM for stream_actions.
+    agent_name: recorded once in the session's .meta.json (with a preview of
+        this turn's task) on a brand-new session, so `/sessions` and
+        `--resume` show more than a bare UUID. Cosmetic only.
     """
     from scripts.amon.terminal import confirm_tool, stream_action
 
     hooks = hooks or {}
     tool_definitions = [t["schema"] for t in tool_registry.values()]
     confirm_fn = confirm_fn or confirm_tool
-    stream_actions = stream_actions or stream_action if not headless else None
+    # A caller-provided stream_actions (e.g. run_task's stream_action_stderr
+    # for AMON_STREAM) must win even in headless mode — operator precedence
+    # here used to parse as `(stream_actions or stream_action) if not
+    # headless else None`, which discarded any caller override whenever
+    # headless was True. The interactive default (`stream_action`) still
+    # only kicks in when nothing was passed AND we're not headless.
+    stream_actions = stream_actions or (None if headless else stream_action)
     token_fn = token_fn if not headless else None
 
     system_prompt = build_system_prompt(
@@ -304,14 +347,33 @@ def run_agent(
     last_content = ""
     active_session_id = session_id
 
+    session_info_saved = False
+
     def _persist(usage_dict: dict) -> None:
-        nonlocal active_session_id, new_messages
+        nonlocal active_session_id, new_messages, session_info_saved
         if not save_session_:
             return
         active_session_id = save_session(new_messages, session_id=active_session_id)
         if active_session_id:
             save_context_tokens(active_session_id, usage_dict.get("prompt_tokens", 0))
+            if not history and not session_info_saved:
+                save_session_info(
+                    active_session_id, agent=agent_name, preview=_preview(user_input)
+                )
+                session_info_saved = True
         new_messages = []
+
+    def _log_event(event_type: str, **fields) -> None:
+        if not event_log:
+            return
+        event_log(
+            {
+                "ts": time.time(),
+                "session_id": str(active_session_id) if active_session_id else None,
+                "event": event_type,
+                **fields,
+            }
+        )
 
     def _finish(
         *,
@@ -379,6 +441,10 @@ def run_agent(
             turns_taken = turn
             break
 
+        # Skip the extra monotonic() calls entirely when nobody's listening —
+        # avoids the cost, and avoids perturbing time.monotonic call counts
+        # for anything mocking the clock (e.g. the time-budget tests).
+        turn_started_at = time.monotonic() if event_log else None
         try:
             response = call_llm_with_tools(
                 system_prompt,
@@ -391,12 +457,18 @@ def run_agent(
             if retried:
                 if _force_hard_trim(conversation):
                     retried = False
+                    _log_event("compact", trigger="retry", method="hard_trim")
                     continue
                 stop_error = f"Model call failed: {exc}"
                 turns_taken = turn + 1
                 break
-            if _compact_history(conversation) or _force_hard_trim(conversation):
+            if _compact_history(conversation):
                 retried = True
+                _log_event("compact", trigger="retry", method="summary")
+                continue
+            if _force_hard_trim(conversation):
+                retried = True
+                _log_event("compact", trigger="retry", method="hard_trim")
                 continue
             stop_error = f"Model call failed: {exc}"
             turns_taken = turn + 1
@@ -409,6 +481,13 @@ def run_agent(
         last_usage = _turn_usage(response.get("usage"))
         accumulated_usage = _add_usage(accumulated_usage, last_usage)
         last_content = message.get("content") or last_content
+        if event_log:
+            _log_event(
+                "turn",
+                turn=turn + 1,
+                latency_s=round(time.monotonic() - turn_started_at, 3),
+                usage=last_usage,
+            )
 
         conversation.append(message)
         new_messages.append(message)
@@ -440,6 +519,7 @@ def run_agent(
         for call in tool_calls:
             name = call["function"]["name"]
             tools_used.append(name)
+            tool_started_at = time.monotonic() if event_log else None
             entry = tool_registry.get(name)
             try:
                 args = json.loads(call["function"]["arguments"])
@@ -460,29 +540,49 @@ def run_agent(
                     f"Agent is running in headless mode and doesn't have "
                     f"permission to run tool {name}."
                 )
-            elif entry["requires_confirmation"] and not confirm_fn(name, args):
-                result = (
-                    f"User denied permission to run tool '{name}' with args {args}."
-                )
             else:
-                fn = entry["fn"]
-                try:
-                    _, blocked = run_hook_event(
-                        specs=hooks.get(HookEventName.PRE_TOOL_USE, []),
-                        session_id=active_session_id,
-                        hook_event_name=HookEventName.PRE_TOOL_USE,
-                        cwd=os.getcwd(),
-                        tool_name=name,
-                        tool_input=args,
+                # confirm_fn may return a bare bool (legacy / simple custom
+                # confirm_fn) or (allowed, reason) — a denial reason the
+                # user typed, fed back so the model can course-correct
+                # instead of just retrying blind.
+                allowed, deny_reason = True, None
+                if entry["requires_confirmation"]:
+                    confirmation = confirm_fn(name, args)
+                    allowed, deny_reason = (
+                        confirmation
+                        if isinstance(confirmation, tuple)
+                        else (confirmation, None)
                     )
-                    if stream_actions:
-                        stream_actions("tool_call", {"name": name, "args": args})
+
+                if not allowed:
                     result = (
-                        f"Tool blocked by hook: {blocked}" if blocked else fn(**args)
+                        f"User denied permission to run tool '{name}' with "
+                        f"args {args}."
                     )
-                except Exception as e:
-                    _persist(last_usage)
-                    result = f"Error: {e}"
+                    if deny_reason:
+                        result += f" Reason: {deny_reason}"
+                else:
+                    fn = entry["fn"]
+                    try:
+                        _, blocked = run_hook_event(
+                            specs=hooks.get(HookEventName.PRE_TOOL_USE, []),
+                            session_id=active_session_id,
+                            hook_event_name=HookEventName.PRE_TOOL_USE,
+                            cwd=os.getcwd(),
+                            tool_name=name,
+                            tool_input=args,
+                        )
+                        if stream_actions:
+                            stream_actions("tool_call", {"name": name, "args": args})
+                        _log_event("tool_call", name=name)
+                        result = (
+                            f"Tool blocked by hook: {blocked}"
+                            if blocked
+                            else fn(**args)
+                        )
+                    except Exception as e:
+                        _persist(last_usage)
+                        result = f"Error: {e}"
             output = truncate_tool_output(
                 str(result),
                 tool=name,
@@ -490,6 +590,13 @@ def run_agent(
                 limit=max_tool_output_chars or MAX_TOOL_OUTPUT_CHARS,
                 spill_dir=TOOL_OUTPUT_DIR,
             )
+            if event_log:
+                _log_event(
+                    "tool_result",
+                    name=name,
+                    latency_s=round(time.monotonic() - tool_started_at, 3),
+                    output_chars=len(output),
+                )
             tool_msg = {
                 "role": "tool",
                 "tool_call_id": call["id"],
@@ -518,8 +625,21 @@ def run_agent(
             )
 
         if last_usage["prompt_tokens"] > compact_at_tokens:
-            if not _compact_history(conversation):
+            if _compact_history(conversation):
+                _log_event(
+                    "compact",
+                    trigger="threshold",
+                    method="summary",
+                    prompt_tokens=last_usage["prompt_tokens"],
+                )
+            else:
                 _force_hard_trim(conversation)
+                _log_event(
+                    "compact",
+                    trigger="threshold",
+                    method="hard_trim",
+                    prompt_tokens=last_usage["prompt_tokens"],
+                )
 
     _persist(last_usage)
 

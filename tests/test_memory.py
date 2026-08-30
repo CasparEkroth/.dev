@@ -10,6 +10,11 @@ from scripts.amon.memory import (
     remove_session,
     save_todos,
     load_todos,
+    save_context_tokens,
+    load_context_tokens,
+    save_session_info,
+    load_session_info,
+    append_event,
 )
 
 
@@ -101,6 +106,62 @@ class TestMemoryFunctions(unittest.TestCase):
         remove_session(self.session_id, self.temp_dir)
         self.assertEqual(load_todos(self.session_id, self.temp_dir), [])
         self.assertFalse((self.temp_dir / f"{self.session_id}.todos.json").exists())
+
+    def test_save_session_info_and_load_it_back(self):
+        save_session_info(
+            self.session_id, self.temp_dir, agent="dev", preview="fix the login bug"
+        )
+        info = load_session_info(self.session_id, self.temp_dir)
+        self.assertEqual(info["agent"], "dev")
+        self.assertEqual(info["preview"], "fix the login bug")
+
+    def test_session_info_does_not_clobber_context_tokens(self):
+        save_context_tokens(self.session_id, 4242, self.temp_dir)
+        save_session_info(self.session_id, self.temp_dir, agent="dev", preview="x")
+        self.assertEqual(load_context_tokens(self.session_id, self.temp_dir), 4242)
+        self.assertEqual(
+            load_session_info(self.session_id, self.temp_dir)["agent"], "dev"
+        )
+
+    def test_context_tokens_does_not_clobber_session_info(self):
+        save_session_info(self.session_id, self.temp_dir, agent="dev", preview="x")
+        save_context_tokens(self.session_id, 10, self.temp_dir)
+        info = load_session_info(self.session_id, self.temp_dir)
+        self.assertEqual(info["agent"], "dev")
+        self.assertEqual(info["preview"], "x")
+
+    def test_load_session_info_for_unknown_session_is_empty(self):
+        info = load_session_info(uuid4(), self.temp_dir)
+        self.assertIsNone(info["agent"])
+        self.assertIsNone(info["preview"])
+
+    def test_append_event_writes_one_jsonl_line(self):
+        import json
+
+        append_event(self.session_id, {"event": "turn", "turn": 1}, self.temp_dir)
+        path = self.temp_dir / f"{self.session_id}.events.jsonl"
+        lines = path.read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0]), {"event": "turn", "turn": 1})
+
+    def test_append_event_appends_not_overwrites(self):
+        append_event(self.session_id, {"event": "turn", "turn": 1}, self.temp_dir)
+        append_event(self.session_id, {"event": "turn", "turn": 2}, self.temp_dir)
+        path = self.temp_dir / f"{self.session_id}.events.jsonl"
+        self.assertEqual(len(path.read_text().splitlines()), 2)
+
+    def test_events_jsonl_excluded_from_session_list(self):
+        save_session(self.conversation, self.session_id, self.temp_dir)
+        append_event(self.session_id, {"event": "turn"}, self.temp_dir)
+        sessions = get_list_of_sessions(self.temp_dir)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0][0].name, str(self.session_id))
+
+    def test_remove_session_also_removes_events_jsonl(self):
+        save_session(self.conversation, self.session_id, self.temp_dir)
+        append_event(self.session_id, {"event": "turn"}, self.temp_dir)
+        remove_session(self.session_id, self.temp_dir)
+        self.assertFalse((self.temp_dir / f"{self.session_id}.events.jsonl").exists())
 
 
 if __name__ == "__main__":
