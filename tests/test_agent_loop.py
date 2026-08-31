@@ -290,6 +290,64 @@ class TestBudgets:
         assert result.ok
 
 
+class TestCancellation:
+    def test_cancel_before_next_turn_stops_with_partial_result(self):
+        # cancel_fn is checked at the top of the per-turn loop — turn 1
+        # completes fully (its own top-of-loop and tool-loop checks are both
+        # False), then the top-of-loop check for turn 2 fires and stops
+        # before a second LLM call ever happens.
+        responses = [
+            _response(content="working", tool_calls=_tool_call()) for _ in range(5)
+        ]
+        calls = iter([False, False, True])
+        result, llm = _run(
+            responses,
+            registry=_registry(lambda **kw: "ok"),
+            max_turns=5,
+            cancel_fn=lambda: next(calls),
+        )
+        assert not result.ok
+        assert result.error == "Interrupted."
+        assert llm.call_count == 1
+        assert result.turns == 1
+
+    def test_cancel_between_tool_calls_stops_mid_turn(self):
+        # Two tool calls in one turn; cancel_fn goes true right before the
+        # second — the first must still have run, the second must not.
+        calls_seen = []
+
+        def fn(**kw):
+            calls_seen.append(kw)
+            return "ok"
+
+        tool_calls = _tool_call(call_id="call_1") + _tool_call(call_id="call_2")
+        responses = [_response(content="working", tool_calls=tool_calls)]
+        cancel_after = iter([False, False, True])
+        result, llm = _run(
+            responses,
+            registry=_registry(fn),
+            max_turns=3,
+            cancel_fn=lambda: next(cancel_after),
+        )
+        assert not result.ok
+        assert result.error == "Interrupted."
+        assert len(calls_seen) == 1
+        assert llm.call_count == 1
+
+    def test_no_cancel_fn_runs_to_completion_as_before(self):
+        result, _ = _run([_response(content="done")], registry=_registry(len))
+        assert result.ok
+        assert result.result == "done"
+
+    def test_cancel_fn_never_true_does_not_interrupt(self):
+        result, _ = _run(
+            [_response(content="done")],
+            registry=_registry(len),
+            cancel_fn=lambda: False,
+        )
+        assert result.ok
+
+
 # --------------------------------------------------------------- compaction
 
 

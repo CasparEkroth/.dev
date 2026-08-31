@@ -291,6 +291,7 @@ def run_agent(
     max_tool_output_chars: int | None = None,
     agent_name: str | None = None,
     event_log: Callable[[dict], None] | None = None,
+    cancel_fn: Callable[[], bool] | None = None,
 ) -> AgentResult:
     """
     tool_registry: {"send_email": {"schema": {...}, "fn": callable}, ...}
@@ -312,6 +313,12 @@ def run_agent(
     agent_name: recorded once in the session's .meta.json (with a preview of
         this turn's task) on a brand-new session, so `/sessions` and
         `--resume` show more than a bare UUID. Cosmetic only.
+    cancel_fn: optional callable polled between turns and between individual
+        tool calls within a turn; a truthy return stops the run at the next
+        checkpoint (not mid-tool-call — an in-flight tool still finishes).
+        The partial run is persisted and returned as a normal, non-ok
+        AgentResult with error="interrupted", same shape as hitting
+        max_turns or max_runtime_s. None (default) disables this entirely.
     """
     from scripts.amon.terminal import confirm_tool, stream_action
 
@@ -441,6 +448,11 @@ def run_agent(
             turns_taken = turn
             break
 
+        if cancel_fn is not None and cancel_fn():
+            stop_error = "Interrupted."
+            turns_taken = turn
+            break
+
         # Skip the extra monotonic() calls entirely when nobody's listening —
         # avoids the cost, and avoids perturbing time.monotonic call counts
         # for anything mocking the clock (e.g. the time-budget tests).
@@ -516,7 +528,12 @@ def run_agent(
 
         _persist(last_usage)
 
+        interrupted_mid_turn = False
         for call in tool_calls:
+            if cancel_fn is not None and cancel_fn():
+                interrupted_mid_turn = True
+                break
+
             name = call["function"]["name"]
             tools_used.append(name)
             tool_started_at = time.monotonic() if event_log else None
@@ -617,6 +634,11 @@ def run_agent(
                 stream_actions("tool_result", {"name": name, "content": output})
             conversation.append(tool_msg)
             new_messages.append(tool_msg)
+
+        if interrupted_mid_turn:
+            stop_error = "Interrupted."
+            turns_taken = turn + 1
+            break
 
         if token_fn:
             token_fn(

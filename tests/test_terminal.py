@@ -227,5 +227,47 @@ class TestChildStderrEvent(unittest.TestCase):
         self.assertIn("[in_progress]", text)
 
 
+class TestToolResultEvent(unittest.TestCase):
+    def test_bracketed_content_in_tool_result_renders_literally(self):
+        # Regression: a typed deny-reason like "not safe [right now]" (or
+        # any tool output containing word-shaped "[...]") was passed
+        # unescaped into Panel(), which Rich parses as markup — the
+        # bracketed word silently vanished from what the user saw, even
+        # though the model received the full text.
+        test_console = Console(record=True, width=200)
+        stream_action(
+            "tool_result",
+            {
+                "name": "shell",
+                "content": "User denied permission... Reason: not safe [right now]",
+            },
+            console=test_console,
+        )
+        text = test_console.export_text()
+        self.assertIn("not safe [right now]", text)
+
+
+class TestPrintSessions(unittest.TestCase):
+    def test_bracketed_preview_renders_literally(self):
+        # Regression: a session preview like "fix the [login] bug" was
+        # passed unescaped into Table.add_row(), which Rich parses as
+        # markup — "[login]" was silently dropped from the sessions table.
+        from unittest.mock import MagicMock
+
+        from scripts.amon import terminal as terminal_module
+
+        test_console = Console(record=True, width=200)
+        fake_path = MagicMock()
+        fake_path.name = "11111111-1111-1111-1111-111111111111"
+        with patch.object(terminal_module, "console", test_console), patch.object(
+            terminal_module,
+            "load_session_info",
+            return_value={"agent": "dev", "preview": "fix the [login] bug"},
+        ):
+            terminal_module.print_sessions([(fake_path, 0.0)])
+        text = test_console.export_text()
+        self.assertIn("fix the [login] bug", text)
+
+
 if __name__ == "__main__":
     unittest.main()

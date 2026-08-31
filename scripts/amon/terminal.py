@@ -409,9 +409,11 @@ def stream_action(event: str, data: dict, *, console: Console | None = None) -> 
                 + str(len(content))
                 + " chars total)"
             )
+        from rich.markup import escape
+
         _print(
             Panel(
-                content,
+                escape(content),
                 title=f"[dim]← Result from {name}[/dim]",
                 border_style="dim",
             )
@@ -496,13 +498,15 @@ def print_sessions(sessions: list[tuple[Path, float]]) -> None:
     table.add_column("Agent", style="magenta")
     table.add_column("Preview", style="white")
     table.add_column("Last modified", style="dim")
+    from rich.markup import escape
+
     for idx, (p, ts) in enumerate(sessions):
         info = load_session_info(p.name)
         table.add_row(
             str(idx),
             p.name,
-            info.get("agent") or "-",
-            info.get("preview") or "-",
+            escape(info.get("agent") or "-"),
+            escape(info.get("preview") or "-"),
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
         )
     console.print(table)

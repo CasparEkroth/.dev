@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 from uuid import UUID, uuid4
 
@@ -198,6 +199,37 @@ def main() -> None:
     _run_interactive(args)
 
 
+def _run_agent_cancelable(**kwargs):
+    """run_agent, but a first Ctrl+C requests a graceful stop instead of an
+    immediate hard abort.
+
+    Installs a SIGINT handler for the duration of the call that sets a flag
+    run_agent polls between turns and between tool calls within a turn — the
+    current step (an in-flight LLM/tool call) still finishes, then the
+    partial run is persisted and returned normally as a non-ok AgentResult.
+    A second Ctrl+C while still running restores default SIGINT behavior and
+    raises KeyboardInterrupt immediately, same as the old hard-cancel-only
+    behavior — the caller's existing `except KeyboardInterrupt` handles that.
+    """
+    cancelled = {"requested": False}
+
+    def _handler(signum, frame):
+        if cancelled["requested"]:
+            signal.default_int_handler(signum, frame)
+            return
+        cancelled["requested"] = True
+        terminal.console.print(
+            "\n[yellow]Stopping after the current step… "
+            "press Ctrl+C again to force quit.[/yellow]"
+        )
+
+    previous_handler = signal.signal(signal.SIGINT, _handler)
+    try:
+        return run_agent(cancel_fn=lambda: cancelled["requested"], **kwargs)
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+
+
 def _run_interactive(args) -> None:
     session_id = _resolve_session_id(args)
     if session_id is None:
@@ -279,7 +311,7 @@ def _run_interactive(args) -> None:
 
         with terminal.spinner_context():
             try:
-                result = run_agent(
+                result = _run_agent_cancelable(
                     system_prompt=agent.system_prompt,
                     user_input=user_input,
                     tool_registry=get_registry(

@@ -1,13 +1,14 @@
 """Tests for the interactive REPL loop in amon_cli.py."""
 
 import argparse
+import signal
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
 from scripts.amon import terminal
 from scripts.amon.agent_loop import AgentResult
-from scripts.amon.amon_cli import _run_interactive
+from scripts.amon.amon_cli import _run_agent_cancelable, _run_interactive
 
 
 def _fake_agent():
@@ -95,6 +96,58 @@ class TestMaxToolOutputCharsParity:
     def test_none_is_forwarded_as_none(self):
         run_agent_mock = _run_repl("do the thing", _ok_result())
         assert run_agent_mock.call_args.kwargs["max_tool_output_chars"] is None
+
+
+class TestGracefulCancel:
+    """A first Ctrl+C should request a graceful stop (cancel_fn), not an
+    immediate hard abort; a second should behave like before (KeyboardInterrupt)."""
+
+    def teardown_method(self):
+        # Belt-and-suspenders: a test failure mid-run must never leave a
+        # custom SIGINT handler installed for the rest of the suite.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    def test_forwards_a_cancel_fn_and_restores_the_previous_handler(self):
+        previous = signal.getsignal(signal.SIGINT)
+        with patch(
+            "scripts.amon.amon_cli.run_agent", return_value=_ok_result()
+        ) as run_agent:
+            _run_agent_cancelable(system_prompt="sys", user_input="task")
+        assert callable(run_agent.call_args.kwargs["cancel_fn"])
+        assert run_agent.call_args.kwargs["cancel_fn"]() is False
+        assert signal.getsignal(signal.SIGINT) is previous
+
+    def test_first_sigint_sets_the_flag_without_raising(self):
+        seen_cancel_fn = {}
+
+        def fake_run_agent(*, cancel_fn, **_kwargs):
+            seen_cancel_fn["fn"] = cancel_fn
+            os_kill_self_sigint()
+            return _ok_result()
+
+        with patch("scripts.amon.amon_cli.run_agent", side_effect=fake_run_agent):
+            _run_agent_cancelable(system_prompt="sys", user_input="task")
+        assert seen_cancel_fn["fn"]() is True
+
+    def test_second_sigint_raises_keyboard_interrupt(self):
+        def fake_run_agent(*, cancel_fn, **_kwargs):
+            os_kill_self_sigint()
+            os_kill_self_sigint()
+            return _ok_result()
+
+        with patch("scripts.amon.amon_cli.run_agent", side_effect=fake_run_agent):
+            try:
+                _run_agent_cancelable(system_prompt="sys", user_input="task")
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise AssertionError("expected KeyboardInterrupt on the second SIGINT")
+
+
+def os_kill_self_sigint() -> None:
+    import os
+
+    os.kill(os.getpid(), signal.SIGINT)
 
 
 class TestCompactCommand:
