@@ -57,8 +57,8 @@ def _trim_for_summary(conversation: list[dict], limit: int = 24) -> list[dict]:
     ]
 
 
-def compact_conversation(conversation: list[dict]) -> list[dict] | None:
-    """Summarize *conversation* into a smaller message list, or None on failure.
+def compact_conversation(conversation: list[dict]) -> dict | None:
+    """Summarize *conversation* into a small structured object, or None on failure.
 
     Uses bounded input first so compaction itself can recover from oversized
     histories. Falls back to a deterministic hard trim if the model still
@@ -69,11 +69,13 @@ def compact_conversation(conversation: list[dict]) -> list[dict] | None:
 
     candidate = _trim_for_summary(conversation)
     prompt = (
-        "Summarize this conversation into a much smaller JSON array with only "
-        "system/user/assistant messages. Preserve the latest task state, open "
-        "questions, and unresolved decisions. Do not include tool_calls or tool "
-        "messages. Return only valid JSON. Conversation:\n"
-        f"{candidate}"
+        "Summarize this conversation into a JSON object with exactly these "
+        'keys: "goal" (string — the user\'s overall objective), "done" '
+        "(array of strings — what has been completed so far), "
+        '"open_questions" (array of strings — unresolved questions or '
+        'decisions), "key_paths" (array of strings — file paths or '
+        "resources touched that still matter). Return only valid JSON. "
+        f"Conversation:\n{candidate}"
     )
 
     try:
@@ -83,14 +85,37 @@ def compact_conversation(conversation: list[dict]) -> list[dict] | None:
             return None
         parsed = None
 
-    if not isinstance(parsed, list):
+    if not isinstance(parsed, dict):
         return None
 
-    return [
-        _normalize_message(m)
-        for m in parsed
-        if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
-    ] or None
+    summary = {
+        "goal": str(parsed.get("goal") or "").strip(),
+        "done": [str(x) for x in parsed.get("done") or [] if str(x).strip()],
+        "open_questions": [
+            str(x) for x in parsed.get("open_questions") or [] if str(x).strip()
+        ],
+        "key_paths": [str(x) for x in parsed.get("key_paths") or [] if str(x).strip()],
+    }
+    if not any(summary.values()):
+        return None
+    return summary
+
+
+def _render_compact_summary(summary: dict) -> str:
+    """Render a structured compact summary into a single message body."""
+    lines = ["[Earlier conversation summarized]"]
+    if summary.get("goal"):
+        lines.append(f"Goal: {summary['goal']}")
+    for label, key in (
+        ("Done", "done"),
+        ("Open questions", "open_questions"),
+        ("Key paths", "key_paths"),
+    ):
+        items = summary.get(key) or []
+        if items:
+            lines.append(f"{label}:")
+            lines.extend(f"- {item}" for item in items)
+    return "\n".join(lines)
 
 
 def _strip_unfinished_tool_turns(conversation: list[dict]) -> list[dict]:
@@ -123,14 +148,15 @@ def _strip_unfinished_tool_turns(conversation: list[dict]) -> list[dict]:
         clean = clean[:last_assistant]
 
 
-def _compact_history(conversation: list[dict]) -> bool:
-    """Summarize *conversation* in place, preserving only complete tool cycles.
-
-    Returns False when the summary was unusable and nothing changed.
+def _compaction_plan(conversation: list[dict]) -> tuple[list[dict], int] | None:
+    """Return (safe, cut): safe is *conversation* with unfinished tool turns
+    stripped, cut is the index up to which it could be summarized. None means
+    there's nothing worth compacting — e.g. only the current, unanswered user
+    message survives stripping — distinct from "the model call failed."
     """
     safe = _strip_unfinished_tool_turns(conversation)
     if not safe:
-        return False
+        return None
     cut = next(
         (
             i
@@ -139,10 +165,31 @@ def _compact_history(conversation: list[dict]) -> bool:
         ),
         len(safe),
     )
+    # A trailing, not-yet-answered user message is the current task, not
+    # history — never let it get folded into the summary.
+    if safe[-1].get("role") == "user":
+        cut = min(cut, len(safe) - 1)
+    if cut <= 0:
+        return None
+    return safe, cut
+
+
+def _compact_history(conversation: list[dict]) -> bool:
+    """Summarize *conversation* in place, preserving only complete tool cycles
+    and the current user task's own text.
+
+    Returns False when the summary was unusable (or there was nothing left
+    worth summarizing) and nothing changed.
+    """
+    plan = _compaction_plan(conversation)
+    if plan is None:
+        return False
+    safe, cut = plan
     summary = compact_conversation(safe[:cut])
     if not summary:
         return False
-    conversation[:] = summary + safe[cut:]
+    summary_message = {"role": "user", "content": _render_compact_summary(summary)}
+    conversation[:] = [summary_message] + safe[cut:]
     return True
 
 

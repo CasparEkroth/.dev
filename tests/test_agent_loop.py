@@ -362,51 +362,92 @@ class TestCompactConversation:
         self.prompt = prompt
         return "irrelevant, parse_llm_json is patched"
 
-    def test_returns_plain_messages(self, monkeypatch):
-        self._patch(monkeypatch, [{"role": "user", "content": "shorter"}])
-        assert compact_conversation([{"role": "user", "content": "long"}]) == [
-            {"role": "user", "content": "shorter"}
-        ]
-
-    def test_strips_tool_calls_and_tool_messages(self, monkeypatch):
+    def test_returns_structured_summary(self, monkeypatch):
         self._patch(
             monkeypatch,
-            [
-                {
-                    "role": "assistant",
-                    "content": "did stuff",
-                    "tool_calls": [{"id": "1"}],
-                },
-                {"role": "tool", "tool_call_id": "1", "content": "result"},
-                {"role": "user", "content": "next"},
-            ],
+            {
+                "goal": "ship the feature",
+                "done": ["wrote the code"],
+                "open_questions": ["is this tested?"],
+                "key_paths": ["src/foo.py"],
+            },
+        )
+        assert compact_conversation([{"role": "user", "content": "long"}]) == {
+            "goal": "ship the feature",
+            "done": ["wrote the code"],
+            "open_questions": ["is this tested?"],
+            "key_paths": ["src/foo.py"],
+        }
+
+    def test_drops_blank_entries_and_coerces_to_strings(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "goal": "",
+                "done": ["ok", "", 3],
+                "open_questions": [],
+                "key_paths": None,
+            },
         )
         out = compact_conversation([{"role": "user", "content": "long"}])
-        # A summarized tool_calls turn would dangle: its tool replies are gone.
-        assert out == [
-            {"role": "assistant", "content": "did stuff"},
-            {"role": "user", "content": "next"},
-        ]
+        assert out == {
+            "goal": "",
+            "done": ["ok", "3"],
+            "open_questions": [],
+            "key_paths": [],
+        }
 
     def test_unusable_json_returns_none(self, monkeypatch):
         self._patch(monkeypatch, None)
         assert compact_conversation([{"role": "user", "content": "x"}]) is None
 
-    def test_non_list_returns_none(self, monkeypatch):
-        self._patch(monkeypatch, {"role": "user", "content": "x"})
+    def test_non_dict_returns_none(self, monkeypatch):
+        self._patch(monkeypatch, [{"role": "user", "content": "x"}])
         assert compact_conversation([{"role": "user", "content": "x"}]) is None
 
-    def test_summary_without_usable_roles_returns_none(self, monkeypatch):
-        self._patch(monkeypatch, [{"role": "tool", "content": "only tools"}])
+    def test_entirely_empty_summary_returns_none(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {"goal": "", "done": [], "open_questions": [], "key_paths": []},
+        )
         assert compact_conversation([{"role": "user", "content": "x"}]) is None
 
     def test_empty_conversation_returns_none(self):
         assert compact_conversation([]) is None
 
     def test_prompt_carries_the_conversation(self, monkeypatch):
-        self._patch(monkeypatch, [{"role": "user", "content": "s"}])
+        self._patch(monkeypatch, {"goal": "s"})
         compact_conversation([{"role": "user", "content": "MARKER"}])
         assert "MARKER" in self.prompt
+
+
+class TestRenderCompactSummary:
+    def test_renders_all_sections(self):
+        from scripts.amon.agent_loop import _render_compact_summary
+
+        text = _render_compact_summary(
+            {
+                "goal": "ship the feature",
+                "done": ["wrote the code"],
+                "open_questions": ["is this tested?"],
+                "key_paths": ["src/foo.py"],
+            }
+        )
+        assert "Goal: ship the feature" in text
+        assert "- wrote the code" in text
+        assert "- is this tested?" in text
+        assert "- src/foo.py" in text
+
+    def test_omits_empty_sections(self):
+        from scripts.amon.agent_loop import _render_compact_summary
+
+        text = _render_compact_summary(
+            {"goal": "ship it", "done": [], "open_questions": [], "key_paths": []}
+        )
+        assert "Goal: ship it" in text
+        assert "Done:" not in text
+        assert "Open questions:" not in text
+        assert "Key paths:" not in text
 
 
 class TestAutoCompaction:
@@ -421,7 +462,12 @@ class TestAutoCompaction:
 
     def test_compacted_above_the_threshold(self):
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             _, llm = _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
                 registry=_registry(lambda **kw: "ok"),
@@ -429,11 +475,17 @@ class TestAutoCompaction:
             )
         compact.assert_called()
         second_turn = llm.call_args_list[1].args[1]
-        assert second_turn[0] == {"role": "user", "content": "summary"}
+        assert second_turn[0]["role"] == "user"
+        assert "summary" in second_turn[0]["content"]
 
     def test_tool_replies_keep_their_parent(self):
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             _, llm = _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
                 registry=_registry(lambda **kw: "ok"),
@@ -451,7 +503,12 @@ class TestAutoCompaction:
 
     def test_compacts_only_the_head(self):
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
                 registry=_registry(lambda **kw: "ok"),
@@ -593,20 +650,34 @@ class TestModelCallFailure:
         ]
 
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             assert _compact_history(conversation) is True
 
         assert compact.call_args.args[0] == [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "task"},
         ]
-        assert conversation[0] == {"role": "user", "content": "summary"}
+        assert conversation[0]["role"] == "user"
+        assert "summary" in conversation[0]["content"]
 
     def test_compact_history_does_not_orphan_tool_calls(self):
         from scripts.amon.agent_loop import _compact_history
 
         conversation = [
             {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": "finished this one",
+                "tool_calls": [
+                    {"id": "call_0", "function": {"name": "echo", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_0", "content": "result 0"},
             {
                 "role": "assistant",
                 "content": "call tools",
@@ -619,20 +690,42 @@ class TestModelCallFailure:
         ]
 
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             assert _compact_history(conversation) is True
 
-        assert conversation[0] == {"role": "user", "content": "summary"}
-        assert all(
-            not (m.get("role") == "assistant" and m.get("tool_calls"))
-            for m in conversation
-        )
+        assert conversation[0]["role"] == "user"
+        assert "summary" in conversation[0]["content"]
+        # The unfinished second cycle (call_2 never got a reply) is gone
+        # entirely — not left dangling with a partial/no reply.
+        assert not any(m.get("tool_call_id") == "call_2" for m in conversation)
+        for m in conversation:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                ids = {c["id"] for c in m["tool_calls"]}
+                replied = {
+                    t.get("tool_call_id")
+                    for t in conversation
+                    if t.get("role") == "tool"
+                }
+                assert ids <= replied
 
     def test_compact_history_drops_unfinished_tool_turns_before_compacting(self):
         from scripts.amon.agent_loop import _compact_history
 
         conversation = [
             {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": "finished this one",
+                "tool_calls": [
+                    {"id": "call_0", "function": {"name": "echo", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_0", "content": "result 0"},
             {
                 "role": "assistant",
                 "content": "call tools",
@@ -646,15 +739,99 @@ class TestModelCallFailure:
         ]
 
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             assert _compact_history(conversation) is True
 
+        # The unfinished second tool cycle (call_2 never got a reply) is
+        # dropped entirely before compaction even sees it.
         compacted_input = compact.call_args.args[0]
         assert all(
             m.get("role") != "assistant" or not m.get("tool_calls")
             for m in compacted_input
         )
-        assert conversation[0] == {"role": "user", "content": "summary"}
+        assert conversation[0]["role"] == "user"
+        assert "summary" in conversation[0]["content"]
+        # The earlier, completed tool cycle survives verbatim.
+        assert {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "result 0",
+        } in conversation
+        assert not any(m.get("tool_call_id") == "call_2" for m in conversation)
+
+    def test_compact_history_preserves_an_unanswered_trailing_user_message(self):
+        """A user message that arrived but hasn't been responded to yet (e.g.
+        compaction triggered by a model-call failure right after it arrived)
+        is the current task, not history — it must never be summarized away."""
+        from scripts.amon.agent_loop import _compact_history
+
+        conversation = [
+            {"role": "user", "content": "earlier task, already handled"},
+            {"role": "assistant", "content": "done with that"},
+            {"role": "user", "content": "the brand new task, still unanswered"},
+        ]
+
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
+            assert _compact_history(conversation) is True
+
+        assert compact.call_args.args[0] == [
+            {"role": "user", "content": "earlier task, already handled"},
+            {"role": "assistant", "content": "done with that"},
+        ]
+        assert conversation[-1] == {
+            "role": "user",
+            "content": "the brand new task, still unanswered",
+        }
+
+    def test_compact_history_is_a_noop_when_only_the_trailing_message_remains(self):
+        from scripts.amon.agent_loop import _compact_history
+
+        conversation = [{"role": "user", "content": "brand new task"}]
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            assert _compact_history(conversation) is False
+        compact.assert_not_called()
+        assert conversation == [{"role": "user", "content": "brand new task"}]
+
+
+class TestCompactionPlan:
+    """_compaction_plan lets callers (the /compact CLI command) tell "nothing
+    to compact" apart from "the model call failed" — they need different
+    messages, since only the latter actually consulted the model."""
+
+    def test_none_when_only_the_trailing_message_remains(self):
+        from scripts.amon.agent_loop import _compaction_plan
+
+        assert _compaction_plan([{"role": "user", "content": "brand new task"}]) is None
+
+    def test_none_for_an_empty_conversation(self):
+        from scripts.amon.agent_loop import _compaction_plan
+
+        assert _compaction_plan([]) is None
+
+    def test_returns_the_safe_list_and_cut_when_there_is_something_to_summarize(self):
+        from scripts.amon.agent_loop import _compaction_plan
+
+        conversation = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "still unanswered"},
+        ]
+        plan = _compaction_plan(conversation)
+        assert plan is not None
+        safe, cut = plan
+        assert safe == conversation
+        assert cut == 2
 
 
 # ---------------------------------------------------------------------- hooks
@@ -871,7 +1048,12 @@ class TestEventLog:
     def test_compact_event_logged_on_threshold_trigger(self):
         events = []
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
                 registry=_registry(lambda **kw: "ok"),

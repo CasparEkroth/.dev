@@ -175,7 +175,11 @@ class TestCompactCommand:
         return compact, save
 
     def test_compact_uses_compact_history_not_the_bare_summarizer(self):
-        conversation = [{"role": "user", "content": "hi"}]
+        conversation = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "hi"},
+        ]
 
         def fake_compact(convo):
             convo[:] = [{"role": "user", "content": "summarized"}]
@@ -188,7 +192,19 @@ class TestCompactCommand:
         assert saved == [{"role": "user", "content": "summarized"}]
 
     def test_failed_compact_does_not_overwrite_the_session(self):
-        conversation = [{"role": "user", "content": "hi"}]
+        conversation = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "hi"},
+        ]
         compact, save = self._run_compact(conversation, lambda convo: False)
         compact.assert_called_once()
+        save.assert_not_called()
+
+    def test_nothing_to_compact_skips_the_model_call_with_an_accurate_message(self):
+        """A session where only the current, unanswered user message survives
+        must not claim the model failed — it was never even called."""
+        conversation = [{"role": "user", "content": "brand new task"}]
+        compact, save = self._run_compact(conversation, lambda convo: False)
+        compact.assert_not_called()
         save.assert_not_called()

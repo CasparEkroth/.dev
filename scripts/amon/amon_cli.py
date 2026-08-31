@@ -13,7 +13,12 @@ from scripts.amon.tools.registry import (
     get_registry,
     READY_AGENTS,
 )
-from scripts.amon.agent_loop import _compact_history, file_event_log, run_agent
+from scripts.amon.agent_loop import (
+    _compact_history,
+    _compaction_plan,
+    file_event_log,
+    run_agent,
+)
 from scripts.amon import terminal
 from scripts.amon.memory import (
     clear_sessions,
@@ -281,6 +286,9 @@ def _run_interactive(args) -> None:
             conversation = load_session(session_id)
             if not conversation:
                 terminal.console.print("[dim]Session is empty.[/dim]")
+                continue
+            if _compaction_plan(conversation) is None:
+                terminal.console.print("[dim]Nothing to compact yet.[/dim]")
                 continue
             # Same path the auto-compactor uses: strips any dangling
             # tool_calls first and only summarizes the safe head, keeping the
