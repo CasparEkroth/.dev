@@ -137,8 +137,15 @@ def write_file(
             results.append(f"{path}: search text not found, no changes made")
             continue
 
+        occurrences = current_file.count(old)
         updated_file = current_file.replace(old, new, 1)
         path.write_text(updated_file)
-        results.append(f"{path}: updated successfully")
+        if occurrences > 1:
+            results.append(
+                f"{path}: 'old' matches {occurrences} times, only the first "
+                "was replaced — narrow the match to be unambiguous"
+            )
+        else:
+            results.append(f"{path}: updated successfully")
 
     return "\n".join(results)
