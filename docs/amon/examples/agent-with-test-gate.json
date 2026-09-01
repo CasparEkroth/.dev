@@ -1,0 +1,14 @@
+{
+  "name": "default-test-gated",
+  "description": "Default-style agent that gates every write_file call through python-validate.",
+  "system_prompt": "You are a coding agent. Use tools instead of guessing. Load matching skills before following skill-specific workflows.",
+  "tools": ["*"],
+  "allowed_tools": ["write_file", "shell_readonly", "read_file", "load_skill", "spawn_agents", "todo_write"],
+  "allowed_skills": ["skill://~/.amon/skills/*/SKILL.md"],
+  "hooks": {
+    "postToolUse": [
+      { "command": "~/.amon/hooks/python_validate_gate.py", "matcher": "write_file" }
+    ]
+  },
+  "max_turns": 50
+}

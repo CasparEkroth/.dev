@@ -576,6 +576,7 @@ def run_agent(
         _persist(last_usage)
 
         interrupted_mid_turn = False
+        post_tool_hook_output: list[str] = []
         for call in tool_calls:
             if cancel_fn is not None and cancel_fn():
                 interrupted_mid_turn = True
@@ -667,7 +668,7 @@ def run_agent(
                 "content": output,
             }
 
-            run_hook_event(
+            post_out, _ = run_hook_event(
                 specs=hooks.get(HookEventName.POST_TOOL_USE, []),
                 session_id=active_session_id,
                 hook_event_name=HookEventName.POST_TOOL_USE,
@@ -676,11 +677,20 @@ def run_agent(
                 tool_input=args,
                 tool_output=output,
             )
+            if post_out.strip():
+                post_tool_hook_output.append(post_out.strip())
 
             if stream_actions:
                 stream_actions("tool_result", {"name": name, "content": output})
             conversation.append(tool_msg)
             new_messages.append(tool_msg)
+
+        # postToolUse hooks (e.g. a test-gate) are context-contributing like
+        # agentSpawn/start: their combined stdout joins the conversation as
+        # its own message after the turn's tool replies, never interleaved
+        # between them (the API requires every tool_calls entry to be
+        # followed immediately by its own tool reply, nothing else).
+        _inject("\n\n".join(post_tool_hook_output))
 
         if interrupted_mid_turn:
             stop_error = "Interrupted."

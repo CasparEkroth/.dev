@@ -258,6 +258,7 @@ class TestBudgets:
     def test_stop_hook_fires_when_the_budget_is_exhausted(self):
         responses = [_response(content="x", tool_calls=_tool_call()) for _ in range(2)]
         with patch("scripts.amon.agent_loop.run_hook_event") as hook:
+            hook.return_value = ("", None)
             _run(
                 responses,
                 registry=_registry(lambda **kw: "ok"),
@@ -923,6 +924,46 @@ class TestHookIntegration:
         tool_msg = next(m for m in conversation if m.get("role") == "tool")
         assert "writes are not allowed here" in tool_msg["content"]
         assert result.ok
+
+    def test_post_tool_use_stdout_joins_the_conversation_after_the_reply(self):
+        """A test-gate style postToolUse hook (e.g. python_validate_gate.py)
+        reports failures via stdout; that must reach the model as its own
+        message right after the tool's reply, not get silently discarded."""
+
+        def fake_hook(**kwargs):
+            if kwargs.get("hook_event_name") == HookEventName.POST_TOOL_USE:
+                return ("python-validate found issues: bad.py: syntax error", None)
+            return ("", None)
+
+        with patch("scripts.amon.agent_loop.run_hook_event", side_effect=fake_hook):
+            _, llm = _run(
+                [_response(tool_calls=_tool_call()), _response(content="ok")],
+                registry=_registry(lambda **kw: "wrote it"),
+                hooks={"postToolUse": [{"command": "gate.py", "matcher": "echo"}]},
+            )
+        conversation = llm.call_args_list[1].args[1]
+        tool_index = next(
+            i for i, m in enumerate(conversation) if m.get("role") == "tool"
+        )
+        assert conversation[tool_index + 1] == {
+            "role": "user",
+            "content": "python-validate found issues: bad.py: syntax error",
+        }
+
+    def test_post_tool_use_empty_stdout_injects_nothing(self):
+        with patch("scripts.amon.agent_loop.run_hook_event", return_value=("", None)):
+            _, llm = _run(
+                [_response(tool_calls=_tool_call()), _response(content="ok")],
+                registry=_registry(lambda **kw: "wrote it"),
+                hooks={"postToolUse": [{"command": "gate.py"}]},
+            )
+        conversation = llm.call_args_list[1].args[1]
+        assert [m["role"] for m in conversation] == [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+        ]
 
 
 # --------------------------------------------- orphaned tool cycle on load

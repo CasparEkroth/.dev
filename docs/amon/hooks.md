@@ -15,9 +15,13 @@ Called from: `scripts/amon/agent_loop.py`
 | `preToolUse` | `HookEventName.PRE_TOOL_USE` | After confirmation, before the tool runs | `tool_name`, `tool_input` |
 | `postToolUse` | `HookEventName.POST_TOOL_USE` | After the tool returns | `tool_name`, `tool_input`, `tool_output` |
 
-`agentSpawn` and `start` are **context-contributing**: their stdout is appended to
-the conversation as a user message and persisted with the session, so an
-environment probe reaches the model without the agent having to run it.
+`agentSpawn`, `start`, and `postToolUse` are **context-contributing**: their
+stdout is appended to the conversation as a user message and persisted with
+the session. For `agentSpawn`/`start` this lets an environment probe reach the
+model without the agent having to run it; for `postToolUse` it lets a
+test-gate style hook (e.g. running a linter/type-checker after `write_file`)
+tell the model what broke, right after the turn's tool replies rather than
+inside any one tool's own result.
 
 ## Configuration
 
@@ -68,7 +72,7 @@ stdin payload still work.
 
 | Code | Effect |
 |------|--------|
-| 0 | Success. For `agentSpawn`/`start`, stdout joins the conversation |
+| 0 | Success. For `agentSpawn`/`start`/`postToolUse`, stdout joins the conversation |
 | 2 | **preToolUse only**: block the tool. Stderr is returned to the model instead of the tool's result |
 | other | Logged as a warning. The run continues — a hook can never break it |
 
@@ -117,6 +121,10 @@ echo "cwd: $(pwd)"
 - Audit logging (prompts, tools, responses)
 - Environment discovery via `agentSpawn`, without spending a tool call
 - Guardrails: block a tool with exit code 2 and tell the model why
+- Test gates: after `write_file`, run a linter/type-checker/test suite via
+  `postToolUse` and print failures to stdout so the model finds out before
+  claiming the change works — see
+  [examples/hooks/python_validate_gate.py](examples/hooks/python_validate_gate.py)
 - Notifications or post-processing on `stop`
 
 Adding a hook step by step? The [amon-author skill](examples/skills/amon-author/SKILL.md) has the checklist.
