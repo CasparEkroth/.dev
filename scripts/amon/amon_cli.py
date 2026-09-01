@@ -25,6 +25,7 @@ from scripts.amon.memory import (
     get_list_of_sessions,
     load_context_tokens,
     load_session,
+    load_session_info,
     remove_session,
     save_session,
 )
@@ -239,6 +240,16 @@ def _run_interactive(args) -> None:
     session_id = _resolve_session_id(args)
     if session_id is None:
         return
+
+    # A resumed session recorded which agent last ran it; a mismatch here
+    # is almost always the user forgetting --agent, not an intentional
+    # switch — the /agent picker is the intentional path.
+    session_agent = load_session_info(session_id).get("agent")
+    if session_agent and session_agent != args.agent:
+        terminal.console.print(
+            f"[yellow]Warning: this session was last run with agent "
+            f"'{session_agent}', but you're resuming with '{args.agent}'.[/yellow]"
+        )
 
     terminal.update_footer(context=load_context_tokens(session_id))
     terminal.show_welcome(session_id)

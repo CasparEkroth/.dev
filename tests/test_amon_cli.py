@@ -208,3 +208,44 @@ class TestCompactCommand:
         compact, save = self._run_compact(conversation, lambda convo: False)
         compact.assert_not_called()
         save.assert_not_called()
+
+
+class TestResumeAgentAffinityWarning:
+    """--resume with a different --agent than the session was started with is
+    almost always a forgotten flag, not an intentional switch (that's what
+    the /agent picker is for) — warn instead of silently running the wrong
+    agent's tools/system_prompt against someone else's history."""
+
+    def _run(self, agent_arg, session_agent):
+        args = argparse.Namespace(agent=agent_arg)
+        with (
+            patch("scripts.amon.amon_cli.READY_AGENTS", {agent_arg: _fake_agent()}),
+            patch(
+                "scripts.amon.amon_cli.terminal.make_prompt_session",
+                return_value=_OneShotPromptSession(None),
+            ),
+            patch("scripts.amon.amon_cli.terminal.show_welcome"),
+            patch("scripts.amon.amon_cli._resolve_session_id", return_value=uuid4()),
+            patch(
+                "scripts.amon.amon_cli.load_session_info",
+                return_value={"agent": session_agent, "preview": "did a thing"},
+            ),
+            patch("scripts.amon.amon_cli.terminal.console.print") as console_print,
+        ):
+            _run_interactive(args)
+        return [str(c.args[0]) for c in console_print.call_args_list]
+
+    def test_warns_when_resumed_agent_differs_from_the_recorded_one(self):
+        printed = self._run(agent_arg="dev", session_agent="planner")
+        warnings = [line for line in printed if "last run with agent" in line]
+        assert len(warnings) == 1
+        assert "planner" in warnings[0]
+        assert "dev" in warnings[0]
+
+    def test_no_warning_when_the_agent_matches(self):
+        printed = self._run(agent_arg="dev", session_agent="dev")
+        assert not any("last run with agent" in line for line in printed)
+
+    def test_no_warning_for_a_session_with_no_recorded_agent(self):
+        printed = self._run(agent_arg="dev", session_agent=None)
+        assert not any("last run with agent" in line for line in printed)
