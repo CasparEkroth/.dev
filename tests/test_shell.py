@@ -4,7 +4,7 @@ import inspect
 
 import pytest
 
-from scripts.amon.tools.shell import run_shell, shell_readonly
+from scripts.amon.tools.shell import run_shell, set_cwd, shell_readonly
 
 
 class TestRunShell:
@@ -206,6 +206,39 @@ class TestShellPathAndCommandGuards:
         (tmp_path / "m.txt").write_text("x")
         assert "m.txt" in run_shell(["ls"], cwd=str(tmp_path))
         assert "m.txt" in shell_readonly(["ls"], cwd=str(tmp_path))
+
+
+class TestSetCwd:
+    """Pure validation only — see TestCwdStickiness in test_agent.py for the
+    registry wrapper that makes a successful call actually sticky."""
+
+    def test_accepts_an_existing_directory(self, tmp_path):
+        assert set_cwd(str(tmp_path)) == f"Working directory set to '{tmp_path}'."
+
+    def test_rejects_a_file(self, tmp_path):
+        target = tmp_path / "f.txt"
+        target.write_text("x")
+        with pytest.raises(NotADirectoryError):
+            set_cwd(str(target))
+
+    def test_rejects_a_missing_path(self, tmp_path):
+        with pytest.raises(NotADirectoryError):
+            set_cwd(str(tmp_path / "does-not-exist"))
+
+    def test_denies_a_directory_outside_allow_paths(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        outside = tmp_path / "nope"
+        outside.mkdir()
+        with pytest.raises(PermissionError, match="allow_paths"):
+            set_cwd(str(outside), allow_paths=[str(allowed / "**")])
+
+    def test_allows_a_directory_inside_allow_paths(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        assert "Working directory set" in set_cwd(
+            str(allowed), allow_paths=[str(allowed / "**")]
+        )
 
 
 class TestCommandNames:

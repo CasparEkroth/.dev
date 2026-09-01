@@ -14,6 +14,8 @@ from scripts.amon.memory import (
     load_context_tokens,
     save_session_info,
     load_session_info,
+    save_session_cwd,
+    load_session_cwd,
     append_event,
 )
 
@@ -134,6 +136,20 @@ class TestMemoryFunctions(unittest.TestCase):
         info = load_session_info(uuid4(), self.temp_dir)
         self.assertIsNone(info["agent"])
         self.assertIsNone(info["preview"])
+
+    def test_save_session_cwd_and_load_it_back(self):
+        save_session_cwd(self.session_id, "/work/src", self.temp_dir)
+        self.assertEqual(load_session_cwd(self.session_id, self.temp_dir), "/work/src")
+
+    def test_load_session_cwd_for_unknown_session_is_none(self):
+        self.assertIsNone(load_session_cwd(uuid4(), self.temp_dir))
+
+    def test_session_cwd_does_not_clobber_session_info(self):
+        save_session_info(self.session_id, self.temp_dir, agent="dev", preview="x")
+        save_session_cwd(self.session_id, "/work/src", self.temp_dir)
+        info = load_session_info(self.session_id, self.temp_dir)
+        self.assertEqual(info["agent"], "dev")
+        self.assertEqual(load_session_cwd(self.session_id, self.temp_dir), "/work/src")
 
     def test_append_event_writes_one_jsonl_line(self):
         import json

@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 from config import DEFAULT_SHELL_TIMEOUT
 from shared.path_guard import (
@@ -25,6 +26,23 @@ READONLY_GIT_SUBCOMMANDS = {
     "blame",
     "rev-parse",
 }
+
+
+def set_cwd(
+    cwd: str,
+    allow_paths: list[str] | None = None,
+    deny_paths: list[str] | None = None,
+) -> str:
+    """Validate *cwd* as a real, permitted directory.
+
+    Pure validation only — the registry wrapper that binds this tool is what
+    actually makes it "sticky" for subsequent `shell`/`shell_readonly` calls,
+    so this stays trivially testable without any session/state concerns.
+    """
+    check_path_access(cwd, allow_paths=allow_paths, deny_paths=deny_paths)
+    if not Path(cwd).is_dir():
+        raise NotADirectoryError(f"'{cwd}' is not a directory")
+    return f"Working directory set to '{cwd}'."
 
 
 def _as_text(stream: str | bytes | None) -> str:

@@ -91,6 +91,18 @@ def load_session_info(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> dic
     return {"agent": meta.get("agent"), "preview": meta.get("preview")}
 
 
+def save_session_cwd(
+    session_id: UUID, cwd: str, session_dir: Path = SESSIONS_DIR
+) -> None:
+    """Record the sticky working directory `set_cwd` last set for this
+    session, so `shell`/`shell_readonly` default to it again on resume."""
+    _update_meta(session_id, session_dir, cwd=cwd)
+
+
+def load_session_cwd(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> str | None:
+    return _load_meta(session_id, session_dir).get("cwd")
+
+
 def _todos_path(session_id: UUID | str, session_dir: Path) -> Path:
     return session_dir / f"{session_id}.todos.json"
 

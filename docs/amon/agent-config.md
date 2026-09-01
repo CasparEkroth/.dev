@@ -117,6 +117,7 @@ Built-in tool names today:
 - `write_file`
 - `load_skill`
 - `todo_write`
+- `set_cwd`
 - `spawn_agents` (registered after agents load)
 
 Notable tool behaviour:
@@ -130,7 +131,10 @@ Notable tool behaviour:
   whitelist (`ls`, `grep`, `find`, `wc`, `tree`, `pwd`, `git`) is enforced on
   `command[0]`; `git`'s subcommand is further restricted to
   `status`/`log`/`diff`/`show`/`branch`/`blame`/`rev-parse`, and `find -exec`
-  is blocked. `rg` and `fd` are not whitelisted.
+  is blocked. `rg` and `fd` are not whitelisted. Both default their `cwd` to
+  the session's sticky value set via `set_cwd` (falling back to `.` if that
+  was never called) whenever the call omits `cwd` — an explicit `cwd` on any
+  individual call still overrides it for that call only.
 - `read_file` returns `path`, `start_line`, `end_line`, `total_lines`
   alongside `content`. `start_line`/`end_line` are the range actually served
   (end clamped to the file's length); `total_lines` is the full file length.
@@ -144,7 +148,20 @@ Notable tool behaviour:
   `old` is replaced. Pass `"overwrite": true` on an item to replace the
   file's entire contents with `new` in one call (creating it and parent
   directories if needed, `old` ignored) — use this for a full rewrite or a
-  new implementation instead of chaining many small `old`/`new` patches.
+  new implementation instead of chaining many small `old`/`new` patches. If
+  `old` matches more than once, only the first occurrence is replaced (as
+  always) but the result line now says so explicitly (`"'old' matches N
+  times, only the first was replaced — narrow the match to be unambiguous"`)
+  instead of the plain success message.
+- `set_cwd` sets the default `cwd` for `shell`/`shell_readonly` calls in this
+  session that omit their own `cwd` — call it once instead of repeating the
+  same directory on every shell call. Validated the same way `cwd` already
+  is (must exist, must pass `allow_paths`/`deny_paths` if configured); a
+  rejected call leaves the previous sticky value (or none) untouched. Takes
+  effect immediately for the rest of the current run, and is also persisted
+  to the session's `.meta.json` so it's still the default after `--resume`.
+  Does not affect `read_file`/`write_file`, which take their own `path`
+  directly and have no `cwd` concept.
 - `todo_write` sets/replaces the checklist of steps for the current task.
   Shape: `todos: [{content, status}]` with `status` in
   `pending` / `in_progress` / `completed`. Each call replaces the **entire**
