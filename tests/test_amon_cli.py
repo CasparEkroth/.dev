@@ -1,13 +1,14 @@
 """Tests for the interactive REPL loop in amon_cli.py."""
 
 import argparse
+import signal
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
 from scripts.amon import terminal
 from scripts.amon.agent_loop import AgentResult
-from scripts.amon.amon_cli import _run_interactive
+from scripts.amon.amon_cli import _run_agent_cancelable, _run_interactive
 
 
 def _fake_agent():
@@ -97,6 +98,58 @@ class TestMaxToolOutputCharsParity:
         assert run_agent_mock.call_args.kwargs["max_tool_output_chars"] is None
 
 
+class TestGracefulCancel:
+    """A first Ctrl+C should request a graceful stop (cancel_fn), not an
+    immediate hard abort; a second should behave like before (KeyboardInterrupt)."""
+
+    def teardown_method(self):
+        # Belt-and-suspenders: a test failure mid-run must never leave a
+        # custom SIGINT handler installed for the rest of the suite.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    def test_forwards_a_cancel_fn_and_restores_the_previous_handler(self):
+        previous = signal.getsignal(signal.SIGINT)
+        with patch(
+            "scripts.amon.amon_cli.run_agent", return_value=_ok_result()
+        ) as run_agent:
+            _run_agent_cancelable(system_prompt="sys", user_input="task")
+        assert callable(run_agent.call_args.kwargs["cancel_fn"])
+        assert run_agent.call_args.kwargs["cancel_fn"]() is False
+        assert signal.getsignal(signal.SIGINT) is previous
+
+    def test_first_sigint_sets_the_flag_without_raising(self):
+        seen_cancel_fn = {}
+
+        def fake_run_agent(*, cancel_fn, **_kwargs):
+            seen_cancel_fn["fn"] = cancel_fn
+            os_kill_self_sigint()
+            return _ok_result()
+
+        with patch("scripts.amon.amon_cli.run_agent", side_effect=fake_run_agent):
+            _run_agent_cancelable(system_prompt="sys", user_input="task")
+        assert seen_cancel_fn["fn"]() is True
+
+    def test_second_sigint_raises_keyboard_interrupt(self):
+        def fake_run_agent(*, cancel_fn, **_kwargs):
+            os_kill_self_sigint()
+            os_kill_self_sigint()
+            return _ok_result()
+
+        with patch("scripts.amon.amon_cli.run_agent", side_effect=fake_run_agent):
+            try:
+                _run_agent_cancelable(system_prompt="sys", user_input="task")
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise AssertionError("expected KeyboardInterrupt on the second SIGINT")
+
+
+def os_kill_self_sigint() -> None:
+    import os
+
+    os.kill(os.getpid(), signal.SIGINT)
+
+
 class TestCompactCommand:
     """/compact must share the same safety net as auto-compact, not the bare
     (unfinished-tool-unaware, no-fallback) compact_conversation call."""
@@ -122,7 +175,11 @@ class TestCompactCommand:
         return compact, save
 
     def test_compact_uses_compact_history_not_the_bare_summarizer(self):
-        conversation = [{"role": "user", "content": "hi"}]
+        conversation = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "hi"},
+        ]
 
         def fake_compact(convo):
             convo[:] = [{"role": "user", "content": "summarized"}]
@@ -135,7 +192,60 @@ class TestCompactCommand:
         assert saved == [{"role": "user", "content": "summarized"}]
 
     def test_failed_compact_does_not_overwrite_the_session(self):
-        conversation = [{"role": "user", "content": "hi"}]
+        conversation = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "hi"},
+        ]
         compact, save = self._run_compact(conversation, lambda convo: False)
         compact.assert_called_once()
         save.assert_not_called()
+
+    def test_nothing_to_compact_skips_the_model_call_with_an_accurate_message(self):
+        """A session where only the current, unanswered user message survives
+        must not claim the model failed — it was never even called."""
+        conversation = [{"role": "user", "content": "brand new task"}]
+        compact, save = self._run_compact(conversation, lambda convo: False)
+        compact.assert_not_called()
+        save.assert_not_called()
+
+
+class TestResumeAgentAffinityWarning:
+    """--resume with a different --agent than the session was started with is
+    almost always a forgotten flag, not an intentional switch (that's what
+    the /agent picker is for) — warn instead of silently running the wrong
+    agent's tools/system_prompt against someone else's history."""
+
+    def _run(self, agent_arg, session_agent):
+        args = argparse.Namespace(agent=agent_arg)
+        with (
+            patch("scripts.amon.amon_cli.READY_AGENTS", {agent_arg: _fake_agent()}),
+            patch(
+                "scripts.amon.amon_cli.terminal.make_prompt_session",
+                return_value=_OneShotPromptSession(None),
+            ),
+            patch("scripts.amon.amon_cli.terminal.show_welcome"),
+            patch("scripts.amon.amon_cli._resolve_session_id", return_value=uuid4()),
+            patch(
+                "scripts.amon.amon_cli.load_session_info",
+                return_value={"agent": session_agent, "preview": "did a thing"},
+            ),
+            patch("scripts.amon.amon_cli.terminal.console.print") as console_print,
+        ):
+            _run_interactive(args)
+        return [str(c.args[0]) for c in console_print.call_args_list]
+
+    def test_warns_when_resumed_agent_differs_from_the_recorded_one(self):
+        printed = self._run(agent_arg="dev", session_agent="planner")
+        warnings = [line for line in printed if "last run with agent" in line]
+        assert len(warnings) == 1
+        assert "planner" in warnings[0]
+        assert "dev" in warnings[0]
+
+    def test_no_warning_when_the_agent_matches(self):
+        printed = self._run(agent_arg="dev", session_agent="dev")
+        assert not any("last run with agent" in line for line in printed)
+
+    def test_no_warning_for_a_session_with_no_recorded_agent(self):
+        printed = self._run(agent_arg="dev", session_agent=None)
+        assert not any("last run with agent" in line for line in printed)

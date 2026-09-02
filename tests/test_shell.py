@@ -4,7 +4,7 @@ import inspect
 
 import pytest
 
-from scripts.amon.tools.shell import run_shell, shell_readonly
+from scripts.amon.tools.shell import run_shell, set_cwd, shell_readonly
 
 
 class TestRunShell:
@@ -80,6 +80,18 @@ class TestShellReadonly:
         with pytest.raises(ValueError, match="not allowed"):
             shell_readonly(["rm", "-rf", "x"], denied_commands=[])
 
+    def test_rg_and_fd_are_not_whitelisted(self):
+        for cmd in ("rg", "fd"):
+            with pytest.raises(ValueError, match="not allowed"):
+                shell_readonly([cmd, "needle"])
+
+    def test_git_blame_and_rev_parse_are_whitelisted(self):
+        for sub in ("blame", "rev-parse"):
+            try:
+                shell_readonly(["git", sub, "--help"])
+            except ValueError as exc:
+                pytest.fail(f"git {sub} unexpectedly rejected: {exc}")
+
 
 class TestShellPathAndCommandGuards:
     def test_run_shell_denies_cwd_outside_allow(self, tmp_path):
@@ -143,10 +155,90 @@ class TestShellPathAndCommandGuards:
         with pytest.raises(PermissionError, match="allow_paths"):
             shell_readonly(["ls"], cwd=str(outside), allow_paths=[str(allowed / "**")])
 
+    def test_traversal_blocked_in_argv_when_allow_paths_set(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        with pytest.raises(PermissionError, match=r"\.\."):
+            run_shell(
+                ["cat", "../secret.txt"],
+                cwd=str(allowed),
+                allow_paths=[str(allowed / "**")],
+            )
+
+    def test_traversal_blocked_in_shell_string_when_allow_paths_set(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        with pytest.raises(PermissionError, match=r"\.\."):
+            run_shell(
+                "cat ../secret.txt",
+                cwd=str(allowed),
+                allow_paths=[str(allowed / "**")],
+            )
+
+    def test_traversal_not_checked_without_allow_paths(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (tmp_path / "f.txt").write_text("hi")
+        out = run_shell(["cat", "../f.txt"], cwd=str(sub))
+        assert out.strip() == "hi"
+
+    def test_absolute_path_argument_is_not_blocked_by_the_heuristic(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        out = run_shell(
+            ["echo", "/usr/bin/env"],
+            cwd=str(allowed),
+            allow_paths=[str(allowed / "**")],
+        )
+        assert out.strip() == "/usr/bin/env"
+
+    def test_shell_readonly_also_checks_traversal(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        with pytest.raises(PermissionError, match=r"\.\."):
+            shell_readonly(
+                ["find", "../"],
+                cwd=str(allowed),
+                allow_paths=[str(allowed / "**")],
+            )
+
     def test_no_guards_default_matches_today(self, tmp_path):
         (tmp_path / "m.txt").write_text("x")
         assert "m.txt" in run_shell(["ls"], cwd=str(tmp_path))
         assert "m.txt" in shell_readonly(["ls"], cwd=str(tmp_path))
+
+
+class TestSetCwd:
+    """Pure validation only — see TestCwdStickiness in test_agent.py for the
+    registry wrapper that makes a successful call actually sticky."""
+
+    def test_accepts_an_existing_directory(self, tmp_path):
+        assert set_cwd(str(tmp_path)) == f"Working directory set to '{tmp_path}'."
+
+    def test_rejects_a_file(self, tmp_path):
+        target = tmp_path / "f.txt"
+        target.write_text("x")
+        with pytest.raises(NotADirectoryError):
+            set_cwd(str(target))
+
+    def test_rejects_a_missing_path(self, tmp_path):
+        with pytest.raises(NotADirectoryError):
+            set_cwd(str(tmp_path / "does-not-exist"))
+
+    def test_denies_a_directory_outside_allow_paths(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        outside = tmp_path / "nope"
+        outside.mkdir()
+        with pytest.raises(PermissionError, match="allow_paths"):
+            set_cwd(str(outside), allow_paths=[str(allowed / "**")])
+
+    def test_allows_a_directory_inside_allow_paths(self, tmp_path):
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        assert "Working directory set" in set_cwd(
+            str(allowed), allow_paths=[str(allowed / "**")]
+        )
 
 
 class TestCommandNames:

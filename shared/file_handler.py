@@ -62,12 +62,18 @@ def read_file(
             "ok": False,
         }
     lines = content.splitlines()
+    total_lines = len(lines)
 
     # Tool schema is 1-based inclusive; convert to 0-based slice indices.
     start = max(start_line - 1, 0) if start_line else 0
-    end = end_line if end_line else len(lines)
+    end = end_line if end_line else total_lines
     return {
         "ok": True,
+        "path": abspath,
+        # 1-based range actually returned (end clamped to file length).
+        "start_line": start + 1,
+        "end_line": min(end, total_lines),
+        "total_lines": total_lines,
         "content": lines[start:end],
     }
 
@@ -131,8 +137,15 @@ def write_file(
             results.append(f"{path}: search text not found, no changes made")
             continue
 
+        occurrences = current_file.count(old)
         updated_file = current_file.replace(old, new, 1)
         path.write_text(updated_file)
-        results.append(f"{path}: updated successfully")
+        if occurrences > 1:
+            results.append(
+                f"{path}: 'old' matches {occurrences} times, only the first "
+                "was replaced — narrow the match to be unambiguous"
+            )
+        else:
+            results.append(f"{path}: updated successfully")
 
     return "\n".join(results)

@@ -258,6 +258,7 @@ class TestBudgets:
     def test_stop_hook_fires_when_the_budget_is_exhausted(self):
         responses = [_response(content="x", tool_calls=_tool_call()) for _ in range(2)]
         with patch("scripts.amon.agent_loop.run_hook_event") as hook:
+            hook.return_value = ("", None)
             _run(
                 responses,
                 registry=_registry(lambda **kw: "ok"),
@@ -290,6 +291,64 @@ class TestBudgets:
         assert result.ok
 
 
+class TestCancellation:
+    def test_cancel_before_next_turn_stops_with_partial_result(self):
+        # cancel_fn is checked at the top of the per-turn loop — turn 1
+        # completes fully (its own top-of-loop and tool-loop checks are both
+        # False), then the top-of-loop check for turn 2 fires and stops
+        # before a second LLM call ever happens.
+        responses = [
+            _response(content="working", tool_calls=_tool_call()) for _ in range(5)
+        ]
+        calls = iter([False, False, True])
+        result, llm = _run(
+            responses,
+            registry=_registry(lambda **kw: "ok"),
+            max_turns=5,
+            cancel_fn=lambda: next(calls),
+        )
+        assert not result.ok
+        assert result.error == "Interrupted."
+        assert llm.call_count == 1
+        assert result.turns == 1
+
+    def test_cancel_between_tool_calls_stops_mid_turn(self):
+        # Two tool calls in one turn; cancel_fn goes true right before the
+        # second — the first must still have run, the second must not.
+        calls_seen = []
+
+        def fn(**kw):
+            calls_seen.append(kw)
+            return "ok"
+
+        tool_calls = _tool_call(call_id="call_1") + _tool_call(call_id="call_2")
+        responses = [_response(content="working", tool_calls=tool_calls)]
+        cancel_after = iter([False, False, True])
+        result, llm = _run(
+            responses,
+            registry=_registry(fn),
+            max_turns=3,
+            cancel_fn=lambda: next(cancel_after),
+        )
+        assert not result.ok
+        assert result.error == "Interrupted."
+        assert len(calls_seen) == 1
+        assert llm.call_count == 1
+
+    def test_no_cancel_fn_runs_to_completion_as_before(self):
+        result, _ = _run([_response(content="done")], registry=_registry(len))
+        assert result.ok
+        assert result.result == "done"
+
+    def test_cancel_fn_never_true_does_not_interrupt(self):
+        result, _ = _run(
+            [_response(content="done")],
+            registry=_registry(len),
+            cancel_fn=lambda: False,
+        )
+        assert result.ok
+
+
 # --------------------------------------------------------------- compaction
 
 
@@ -304,51 +363,92 @@ class TestCompactConversation:
         self.prompt = prompt
         return "irrelevant, parse_llm_json is patched"
 
-    def test_returns_plain_messages(self, monkeypatch):
-        self._patch(monkeypatch, [{"role": "user", "content": "shorter"}])
-        assert compact_conversation([{"role": "user", "content": "long"}]) == [
-            {"role": "user", "content": "shorter"}
-        ]
-
-    def test_strips_tool_calls_and_tool_messages(self, monkeypatch):
+    def test_returns_structured_summary(self, monkeypatch):
         self._patch(
             monkeypatch,
-            [
-                {
-                    "role": "assistant",
-                    "content": "did stuff",
-                    "tool_calls": [{"id": "1"}],
-                },
-                {"role": "tool", "tool_call_id": "1", "content": "result"},
-                {"role": "user", "content": "next"},
-            ],
+            {
+                "goal": "ship the feature",
+                "done": ["wrote the code"],
+                "open_questions": ["is this tested?"],
+                "key_paths": ["src/foo.py"],
+            },
+        )
+        assert compact_conversation([{"role": "user", "content": "long"}]) == {
+            "goal": "ship the feature",
+            "done": ["wrote the code"],
+            "open_questions": ["is this tested?"],
+            "key_paths": ["src/foo.py"],
+        }
+
+    def test_drops_blank_entries_and_coerces_to_strings(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "goal": "",
+                "done": ["ok", "", 3],
+                "open_questions": [],
+                "key_paths": None,
+            },
         )
         out = compact_conversation([{"role": "user", "content": "long"}])
-        # A summarized tool_calls turn would dangle: its tool replies are gone.
-        assert out == [
-            {"role": "assistant", "content": "did stuff"},
-            {"role": "user", "content": "next"},
-        ]
+        assert out == {
+            "goal": "",
+            "done": ["ok", "3"],
+            "open_questions": [],
+            "key_paths": [],
+        }
 
     def test_unusable_json_returns_none(self, monkeypatch):
         self._patch(monkeypatch, None)
         assert compact_conversation([{"role": "user", "content": "x"}]) is None
 
-    def test_non_list_returns_none(self, monkeypatch):
-        self._patch(monkeypatch, {"role": "user", "content": "x"})
+    def test_non_dict_returns_none(self, monkeypatch):
+        self._patch(monkeypatch, [{"role": "user", "content": "x"}])
         assert compact_conversation([{"role": "user", "content": "x"}]) is None
 
-    def test_summary_without_usable_roles_returns_none(self, monkeypatch):
-        self._patch(monkeypatch, [{"role": "tool", "content": "only tools"}])
+    def test_entirely_empty_summary_returns_none(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {"goal": "", "done": [], "open_questions": [], "key_paths": []},
+        )
         assert compact_conversation([{"role": "user", "content": "x"}]) is None
 
     def test_empty_conversation_returns_none(self):
         assert compact_conversation([]) is None
 
     def test_prompt_carries_the_conversation(self, monkeypatch):
-        self._patch(monkeypatch, [{"role": "user", "content": "s"}])
+        self._patch(monkeypatch, {"goal": "s"})
         compact_conversation([{"role": "user", "content": "MARKER"}])
         assert "MARKER" in self.prompt
+
+
+class TestRenderCompactSummary:
+    def test_renders_all_sections(self):
+        from scripts.amon.agent_loop import _render_compact_summary
+
+        text = _render_compact_summary(
+            {
+                "goal": "ship the feature",
+                "done": ["wrote the code"],
+                "open_questions": ["is this tested?"],
+                "key_paths": ["src/foo.py"],
+            }
+        )
+        assert "Goal: ship the feature" in text
+        assert "- wrote the code" in text
+        assert "- is this tested?" in text
+        assert "- src/foo.py" in text
+
+    def test_omits_empty_sections(self):
+        from scripts.amon.agent_loop import _render_compact_summary
+
+        text = _render_compact_summary(
+            {"goal": "ship it", "done": [], "open_questions": [], "key_paths": []}
+        )
+        assert "Goal: ship it" in text
+        assert "Done:" not in text
+        assert "Open questions:" not in text
+        assert "Key paths:" not in text
 
 
 class TestAutoCompaction:
@@ -363,7 +463,12 @@ class TestAutoCompaction:
 
     def test_compacted_above_the_threshold(self):
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             _, llm = _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
                 registry=_registry(lambda **kw: "ok"),
@@ -371,11 +476,17 @@ class TestAutoCompaction:
             )
         compact.assert_called()
         second_turn = llm.call_args_list[1].args[1]
-        assert second_turn[0] == {"role": "user", "content": "summary"}
+        assert second_turn[0]["role"] == "user"
+        assert "summary" in second_turn[0]["content"]
 
     def test_tool_replies_keep_their_parent(self):
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             _, llm = _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
                 registry=_registry(lambda **kw: "ok"),
@@ -393,7 +504,12 @@ class TestAutoCompaction:
 
     def test_compacts_only_the_head(self):
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
                 registry=_registry(lambda **kw: "ok"),
@@ -535,20 +651,34 @@ class TestModelCallFailure:
         ]
 
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             assert _compact_history(conversation) is True
 
         assert compact.call_args.args[0] == [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "task"},
         ]
-        assert conversation[0] == {"role": "user", "content": "summary"}
+        assert conversation[0]["role"] == "user"
+        assert "summary" in conversation[0]["content"]
 
     def test_compact_history_does_not_orphan_tool_calls(self):
         from scripts.amon.agent_loop import _compact_history
 
         conversation = [
             {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": "finished this one",
+                "tool_calls": [
+                    {"id": "call_0", "function": {"name": "echo", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_0", "content": "result 0"},
             {
                 "role": "assistant",
                 "content": "call tools",
@@ -561,20 +691,42 @@ class TestModelCallFailure:
         ]
 
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             assert _compact_history(conversation) is True
 
-        assert conversation[0] == {"role": "user", "content": "summary"}
-        assert all(
-            not (m.get("role") == "assistant" and m.get("tool_calls"))
-            for m in conversation
-        )
+        assert conversation[0]["role"] == "user"
+        assert "summary" in conversation[0]["content"]
+        # The unfinished second cycle (call_2 never got a reply) is gone
+        # entirely — not left dangling with a partial/no reply.
+        assert not any(m.get("tool_call_id") == "call_2" for m in conversation)
+        for m in conversation:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                ids = {c["id"] for c in m["tool_calls"]}
+                replied = {
+                    t.get("tool_call_id")
+                    for t in conversation
+                    if t.get("role") == "tool"
+                }
+                assert ids <= replied
 
     def test_compact_history_drops_unfinished_tool_turns_before_compacting(self):
         from scripts.amon.agent_loop import _compact_history
 
         conversation = [
             {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": "finished this one",
+                "tool_calls": [
+                    {"id": "call_0", "function": {"name": "echo", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_0", "content": "result 0"},
             {
                 "role": "assistant",
                 "content": "call tools",
@@ -588,15 +740,99 @@ class TestModelCallFailure:
         ]
 
         with patch("scripts.amon.agent_loop.compact_conversation") as compact:
-            compact.return_value = [{"role": "user", "content": "summary"}]
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
             assert _compact_history(conversation) is True
 
+        # The unfinished second tool cycle (call_2 never got a reply) is
+        # dropped entirely before compaction even sees it.
         compacted_input = compact.call_args.args[0]
         assert all(
             m.get("role") != "assistant" or not m.get("tool_calls")
             for m in compacted_input
         )
-        assert conversation[0] == {"role": "user", "content": "summary"}
+        assert conversation[0]["role"] == "user"
+        assert "summary" in conversation[0]["content"]
+        # The earlier, completed tool cycle survives verbatim.
+        assert {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "result 0",
+        } in conversation
+        assert not any(m.get("tool_call_id") == "call_2" for m in conversation)
+
+    def test_compact_history_preserves_an_unanswered_trailing_user_message(self):
+        """A user message that arrived but hasn't been responded to yet (e.g.
+        compaction triggered by a model-call failure right after it arrived)
+        is the current task, not history — it must never be summarized away."""
+        from scripts.amon.agent_loop import _compact_history
+
+        conversation = [
+            {"role": "user", "content": "earlier task, already handled"},
+            {"role": "assistant", "content": "done with that"},
+            {"role": "user", "content": "the brand new task, still unanswered"},
+        ]
+
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
+            assert _compact_history(conversation) is True
+
+        assert compact.call_args.args[0] == [
+            {"role": "user", "content": "earlier task, already handled"},
+            {"role": "assistant", "content": "done with that"},
+        ]
+        assert conversation[-1] == {
+            "role": "user",
+            "content": "the brand new task, still unanswered",
+        }
+
+    def test_compact_history_is_a_noop_when_only_the_trailing_message_remains(self):
+        from scripts.amon.agent_loop import _compact_history
+
+        conversation = [{"role": "user", "content": "brand new task"}]
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            assert _compact_history(conversation) is False
+        compact.assert_not_called()
+        assert conversation == [{"role": "user", "content": "brand new task"}]
+
+
+class TestCompactionPlan:
+    """_compaction_plan lets callers (the /compact CLI command) tell "nothing
+    to compact" apart from "the model call failed" — they need different
+    messages, since only the latter actually consulted the model."""
+
+    def test_none_when_only_the_trailing_message_remains(self):
+        from scripts.amon.agent_loop import _compaction_plan
+
+        assert _compaction_plan([{"role": "user", "content": "brand new task"}]) is None
+
+    def test_none_for_an_empty_conversation(self):
+        from scripts.amon.agent_loop import _compaction_plan
+
+        assert _compaction_plan([]) is None
+
+    def test_returns_the_safe_list_and_cut_when_there_is_something_to_summarize(self):
+        from scripts.amon.agent_loop import _compaction_plan
+
+        conversation = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "still unanswered"},
+        ]
+        plan = _compaction_plan(conversation)
+        assert plan is not None
+        safe, cut = plan
+        assert safe == conversation
+        assert cut == 2
 
 
 # ---------------------------------------------------------------------- hooks
@@ -689,6 +925,46 @@ class TestHookIntegration:
         assert "writes are not allowed here" in tool_msg["content"]
         assert result.ok
 
+    def test_post_tool_use_stdout_joins_the_conversation_after_the_reply(self):
+        """A test-gate style postToolUse hook (e.g. python_validate_gate.py)
+        reports failures via stdout; that must reach the model as its own
+        message right after the tool's reply, not get silently discarded."""
+
+        def fake_hook(**kwargs):
+            if kwargs.get("hook_event_name") == HookEventName.POST_TOOL_USE:
+                return ("python-validate found issues: bad.py: syntax error", None)
+            return ("", None)
+
+        with patch("scripts.amon.agent_loop.run_hook_event", side_effect=fake_hook):
+            _, llm = _run(
+                [_response(tool_calls=_tool_call()), _response(content="ok")],
+                registry=_registry(lambda **kw: "wrote it"),
+                hooks={"postToolUse": [{"command": "gate.py", "matcher": "echo"}]},
+            )
+        conversation = llm.call_args_list[1].args[1]
+        tool_index = next(
+            i for i, m in enumerate(conversation) if m.get("role") == "tool"
+        )
+        assert conversation[tool_index + 1] == {
+            "role": "user",
+            "content": "python-validate found issues: bad.py: syntax error",
+        }
+
+    def test_post_tool_use_empty_stdout_injects_nothing(self):
+        with patch("scripts.amon.agent_loop.run_hook_event", return_value=("", None)):
+            _, llm = _run(
+                [_response(tool_calls=_tool_call()), _response(content="ok")],
+                registry=_registry(lambda **kw: "wrote it"),
+                hooks={"postToolUse": [{"command": "gate.py"}]},
+            )
+        conversation = llm.call_args_list[1].args[1]
+        assert [m["role"] for m in conversation] == [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+        ]
+
 
 # --------------------------------------------- orphaned tool cycle on load
 
@@ -768,6 +1044,172 @@ class TestSanitizeHistoryOnLoad:
 
 
 # ------------------------------------------------------- todo resume/inject
+
+
+class TestEventLog:
+    """Optional structured event log (AMON_EVENTS) — off unless a caller
+    passes event_log, and never touches time.monotonic when it's None."""
+
+    def test_turn_and_tool_events_are_logged(self):
+        events = []
+        _run(
+            [_response(tool_calls=_tool_call()), _response(content="done")],
+            registry=_registry(lambda **kw: "ok"),
+            event_log=events.append,
+        )
+        kinds = [e["event"] for e in events]
+        assert kinds.count("turn") == 2
+        assert "tool_call" in kinds
+        assert "tool_result" in kinds
+
+    def test_turn_event_has_latency_and_usage(self):
+        events = []
+        _run(
+            [_response(content="done", prompt_tokens=7, completion_tokens=3)],
+            registry=_registry(lambda **kw: "ok"),
+            event_log=events.append,
+        )
+        turn_events = [e for e in events if e["event"] == "turn"]
+        assert len(turn_events) == 1
+        assert turn_events[0]["usage"]["prompt_tokens"] == 7
+        assert isinstance(turn_events[0]["latency_s"], float)
+
+    def test_tool_result_event_has_output_chars(self):
+        events = []
+        _run(
+            [_response(tool_calls=_tool_call()), _response(content="done")],
+            registry=_registry(lambda **kw: "a real result"),
+            event_log=events.append,
+        )
+        result_events = [e for e in events if e["event"] == "tool_result"]
+        assert len(result_events) == 1
+        assert result_events[0]["output_chars"] == len("a real result")
+        assert result_events[0]["name"] == "echo"
+
+    def test_compact_event_logged_on_threshold_trigger(self):
+        events = []
+        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+            compact.return_value = {
+                "goal": "summary",
+                "done": [],
+                "open_questions": [],
+                "key_paths": [],
+            }
+            _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+                compact_at_tokens=1,
+                event_log=events.append,
+            )
+        compact_events = [e for e in events if e["event"] == "compact"]
+        assert len(compact_events) == 1
+        assert compact_events[0]["trigger"] == "threshold"
+        assert compact_events[0]["method"] == "summary"
+
+    def test_events_carry_session_id_when_present(self):
+        events = []
+        sid = uuid4()
+        with (
+            patch("scripts.amon.agent_loop.load_session", return_value=[]),
+            patch("scripts.amon.agent_loop.save_session", return_value=sid),
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=True,
+                headless=True,
+                session_id=sid,
+                event_log=events.append,
+            )
+        assert all(e["session_id"] == str(sid) for e in events)
+
+    def test_monotonic_not_called_extra_times_when_event_log_is_none(self):
+        # Regression: adding timing must not perturb time.monotonic call
+        # counts for anything mocking the clock (e.g. TestBudgets below).
+        clock = iter([0.0, 0.0, 99.0])
+        responses = [
+            _response(content="working", tool_calls=_tool_call()) for _ in range(5)
+        ]
+        with patch("scripts.amon.agent_loop.time.monotonic", lambda: next(clock)):
+            result, _ = _run(
+                responses,
+                registry=_registry(lambda **kw: "ok"),
+                max_turns=5,
+                max_runtime_s=10,
+            )
+        assert not result.ok
+        assert "Time budget" in result.error
+
+
+class TestSessionInfo:
+    """A new session records {agent, preview} once, for /sessions and
+    --resume; a resumed session doesn't re-save it on every turn."""
+
+    def test_new_session_saves_agent_and_preview(self):
+        sid = uuid4()
+        with (
+            patch("scripts.amon.agent_loop.load_session", return_value=[]),
+            patch("scripts.amon.agent_loop.save_session", return_value=sid),
+            patch("scripts.amon.agent_loop.save_session_info") as save_info,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="fix the login bug please",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=True,
+                headless=True,
+                session_id=sid,
+                agent_name="dev",
+            )
+        save_info.assert_called_once()
+        assert save_info.call_args.args[0] == sid
+        assert save_info.call_args.kwargs["agent"] == "dev"
+        assert "fix the login bug" in save_info.call_args.kwargs["preview"]
+
+    def test_resumed_session_does_not_resave_info(self):
+        with (
+            patch("scripts.amon.agent_loop.load_session") as load,
+            patch("scripts.amon.agent_loop.save_session", return_value=uuid4()),
+            patch("scripts.amon.agent_loop.save_session_info") as save_info,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            load.return_value = [{"role": "user", "content": "earlier"}]
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="continue please",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=True,
+                headless=True,
+                session_id=uuid4(),
+                agent_name="dev",
+            )
+        save_info.assert_not_called()
+
+    def test_no_session_id_never_saves_info(self):
+        with (
+            patch("scripts.amon.agent_loop.save_session_info") as save_info,
+            patch("scripts.amon.agent_loop.call_llm_with_tools") as llm,
+        ):
+            llm.side_effect = [_response(content="hi")]
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry={},
+                skill_catalog=[],
+                save_session_=False,
+                headless=True,
+                agent_name="dev",
+            )
+        save_info.assert_not_called()
 
 
 class TestTodoResumeInjection:
@@ -857,6 +1299,112 @@ class TestTodoResumeInjection:
 # -------------------------------------------------------- bad tool calls
 
 
+class TestConfirmationOutcomes:
+    """confirm_fn may return a bare bool or (allowed, reason).
+
+    Uses run_agent directly with headless=False: the _run() helper always
+    forces headless=True, which short-circuits before confirm_fn is ever
+    called (see TestHeadlessShortCircuitsConfirm below) — not useful here.
+    """
+
+    def _registry_confirmable(self, fn):
+        return {
+            "echo": {
+                "schema": {"type": "function", "function": {"name": "echo"}},
+                "fn": fn,
+                "requires_confirmation": True,
+            }
+        }
+
+    def _run_interactive_style(self, responses, registry, confirm_fn):
+        with patch("scripts.amon.agent_loop.call_llm_with_tools") as llm:
+            llm.side_effect = responses
+            result = run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry=registry,
+                skill_catalog=[],
+                save_session_=False,
+                headless=False,
+                confirm_fn=confirm_fn,
+                stream_actions=lambda *a, **kw: None,
+            )
+        return result, llm
+
+    def test_bare_bool_true_still_runs_the_tool(self):
+        called = []
+        result, _ = self._run_interactive_style(
+            [_response(tool_calls=_tool_call(name="echo")), _response(content="done")],
+            self._registry_confirmable(lambda **kw: called.append(kw) or "ran"),
+            confirm_fn=lambda name, args: True,
+        )
+        assert called
+        assert result.ok
+
+    def test_bare_bool_false_denies_without_a_reason(self):
+        called = []
+        result, llm = self._run_interactive_style(
+            [
+                _response(tool_calls=_tool_call(name="echo")),
+                _response(content="understood"),
+            ],
+            self._registry_confirmable(lambda **kw: called.append(kw) or "ran"),
+            confirm_fn=lambda name, args: False,
+        )
+        assert called == []
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "User denied permission" in tool_msg["content"]
+        assert "Reason:" not in tool_msg["content"]
+
+    def test_tuple_true_runs_the_tool(self):
+        called = []
+        result, _ = self._run_interactive_style(
+            [_response(tool_calls=_tool_call(name="echo")), _response(content="done")],
+            self._registry_confirmable(lambda **kw: called.append(kw) or "ran"),
+            confirm_fn=lambda name, args: (True, None),
+        )
+        assert called
+        assert result.ok
+
+    def test_tuple_false_with_reason_reaches_the_model(self):
+        called = []
+        result, llm = self._run_interactive_style(
+            [
+                _response(tool_calls=_tool_call(name="echo")),
+                _response(content="understood"),
+            ],
+            self._registry_confirmable(lambda **kw: called.append(kw) or "ran"),
+            confirm_fn=lambda name, args: (False, "not safe to run right now"),
+        )
+        assert called == []
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "User denied permission" in tool_msg["content"]
+        assert "Reason: not safe to run right now" in tool_msg["content"]
+
+
+class TestHeadlessShortCircuitsConfirm:
+    def test_headless_never_calls_confirm_fn(self):
+        confirm_calls = []
+        registry = {
+            "echo": {
+                "schema": {"type": "function", "function": {"name": "echo"}},
+                "fn": lambda **kw: "ran",
+                "requires_confirmation": True,
+            }
+        }
+        result, llm = _run(
+            [_response(tool_calls=_tool_call(name="echo")), _response(content="ok")],
+            registry=registry,
+            confirm_fn=lambda name, args: confirm_calls.append(1) or True,
+        )
+        assert confirm_calls == []
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "headless mode" in tool_msg["content"]
+
+
 class TestBadToolCalls:
     """Unknown names / malformed args must not kill the loop."""
 
@@ -927,6 +1475,24 @@ class TestBadToolCalls:
 # ------------------------------------------------------------ prompt template
 
 
+class TestFileEventLog:
+    def test_delegates_to_append_event_with_the_events_session_id(self):
+        from scripts.amon.agent_loop import file_event_log
+
+        with patch("scripts.amon.agent_loop.append_event") as append:
+            file_event_log({"session_id": "abc-123", "event": "turn"})
+        append.assert_called_once_with(
+            "abc-123", {"session_id": "abc-123", "event": "turn"}
+        )
+
+    def test_drops_events_with_no_session_id(self):
+        from scripts.amon.agent_loop import file_event_log
+
+        with patch("scripts.amon.agent_loop.append_event") as append:
+            file_event_log({"event": "turn", "session_id": None})
+        append.assert_not_called()
+
+
 class TestSystemPromptTemplate:
     CATALOG = SKILL_CATALOG
 
@@ -935,6 +1501,20 @@ class TestSystemPromptTemplate:
         assert "BASE" in out
         assert str(Path.cwd()) in out
         assert "s1" in out and "does things" in out
+        assert "load_skill" in out
+
+    def test_skill_mandate_does_not_demand_first_tool_call(self):
+        # Regression: the old wording ("your FIRST tool call MUST be
+        # load_skill...") directly contradicted default/dev's own
+        # "call todo_write ... before your first other tool call" rule
+        # whenever both applied to the same request.
+        out = build_system_prompt(
+            "call todo_write with the full checklist before your first "
+            "other tool call",
+            self.CATALOG,
+        )
+        assert "FIRST tool call MUST be" not in out
+        assert "before your first other tool call" in out
         assert "load_skill" in out
 
     def test_custom_template_can_drop_the_mandate(self):
@@ -958,6 +1538,65 @@ class TestSystemPromptTemplate:
             system_prompt_template="ONLY: {prompt}",
         )
         assert llm.call_args_list[0].args[0] == "ONLY: sys"
+
+
+class TestStreamActionsHeadlessOverride:
+    """Regression: operator precedence used to parse `stream_actions =
+    stream_actions or stream_action if not headless else None` as
+    `(stream_actions or stream_action) if not headless else None`, which
+    discarded ANY caller-provided stream_actions whenever headless=True —
+    silently breaking run_task's AMON_STREAM support entirely."""
+
+    def test_caller_stream_actions_is_used_in_headless_mode(self):
+        # _run() already forces headless=True.
+        seen = []
+        _run(
+            [_response(tool_calls=_tool_call()), _response(content="done")],
+            registry=_registry(lambda **kw: "ok"),
+            stream_actions=lambda event, data: seen.append(event),
+        )
+        assert "tool_call" in seen
+        assert "tool_result" in seen
+
+    def test_no_stream_actions_in_headless_mode_stays_silent(self):
+        # Default (no caller override) must still be None in headless mode —
+        # only an explicit override should turn streaming on.
+        with patch("scripts.amon.terminal.stream_action") as default_stream:
+            _run(
+                [_response(tool_calls=_tool_call()), _response(content="done")],
+                registry=_registry(lambda **kw: "ok"),
+            )
+        default_stream.assert_not_called()
+
+    def test_default_stream_action_used_when_not_headless_and_no_override(self):
+        with patch("scripts.amon.terminal.stream_action") as default_stream:
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry=_registry(lambda **kw: "ok"),
+                skill_catalog=[],
+                save_session_=False,
+                headless=False,
+                confirm_fn=lambda name, args: True,
+            )
+        default_stream.assert_not_called()  # no tool call in this run
+        # Confirm it's actually wired in by triggering a tool call turn:
+        with patch("scripts.amon.terminal.stream_action") as default_stream:
+            with patch("scripts.amon.agent_loop.call_llm_with_tools") as llm:
+                llm.side_effect = [
+                    _response(tool_calls=_tool_call()),
+                    _response(content="done"),
+                ]
+                run_agent(
+                    system_prompt="sys",
+                    user_input="task",
+                    tool_registry=_registry(lambda **kw: "ok"),
+                    skill_catalog=[],
+                    save_session_=False,
+                    headless=False,
+                    confirm_fn=lambda name, args: True,
+                )
+        assert default_stream.called
 
 
 class TestModelOverride:

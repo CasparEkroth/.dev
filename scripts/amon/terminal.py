@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from pathlib import Path
+import json
 import pprint
 import re
 import sys
@@ -24,7 +25,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.styles import Style
-from scripts.amon.memory import load_session
+from scripts.amon.memory import load_session, load_session_info
 from scripts.amon.tools.agent import Agent
 from scripts.amon.tools.registry import READY_AGENTS
 from scripts.amon.tools.todo import get_todos, render_todos
@@ -79,7 +80,9 @@ class StatusFooter:
                 if self.context_limit
                 else 0.0
             )
-        header = f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
+        header = (
+            f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
+        )
         if not self.todo_lines:
             return HTML(header)
         # todo_lines is free-form text a todo_write call wrote — it can
@@ -93,16 +96,21 @@ class StatusFooter:
 
 footer = StatusFooter()
 
+#: Tool names approved for the rest of the current REPL session via the
+#: confirm prompt's "always" answer. Cleared on /new, same as the footer.
+_session_allowed_tools: set[str] = set()
 
-def update_footer(tokens_added: int = 0, context: int | str = 0) -> None:
+
+def update_footer(tokens_added: int = 0, context: int | str | None = None) -> None:
     if tokens_added:
         footer.add_tokens(tokens_added)
-    if context:
+    if context is not None:
         footer.set_context(context)
 
 
-def reste_context() -> None:
+def reset_context() -> None:
     footer.reset_footer(context=True, todos=True)
+    _session_allowed_tools.clear()
 
 
 def set_context_limit(limit: int) -> None:
@@ -218,13 +226,15 @@ def pick_session(sessions: list[tuple[Path, float]]) -> Path | None:
     if not sessions:
         console.print("[yellow]No sessions found.[/yellow]")
         return None
-    choices = [
-        questionary.Choice(
-            title=f"{p.name[:8]}…  {time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}",
-            value=p,
-        )
-        for p, ts in sessions
-    ]
+    choices = []
+    for p, ts in sessions:
+        info = load_session_info(p.name)
+        label = f"{p.name[:8]}…  {time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}"
+        if info.get("agent"):
+            label += f"  [{info['agent']}]"
+        if info.get("preview"):
+            label += f"  {info['preview']}"
+        choices.append(questionary.Choice(title=label, value=p))
     choices.append(questionary.Choice(title="[cancel]", value=None))
     return questionary.select("Pick a session to resume:", choices=choices).ask()
 
@@ -293,7 +303,16 @@ def _restore_echo() -> None:
         pass
 
 
-def confirm_tool(name: str, args: dict) -> bool:
+def confirm_tool(name: str, args: dict) -> tuple[bool, str | None]:
+    """Ask the user to approve one tool call.
+
+    Returns ``(allowed, deny_reason)``. ``deny_reason`` is the free text the
+    user optionally typed on a denial, fed back to the model so it can
+    course-correct instead of retrying the same call blind.
+    """
+    if name in _session_allowed_tools:
+        return True, None
+
     # Pause Live so the confirm panel owns the terminal cleanly.
     # Plain input() here, not questionary/prompt_toolkit: prompt_toolkit's
     # cursor-position (CPR) handshake can race with Live's just-stopped
@@ -313,8 +332,15 @@ def confirm_tool(name: str, args: dict) -> bool:
             )
         )
         _restore_echo()
-        answer = input("Allow? [y/N]: ").strip().lower()
-        return answer == "y"
+        answer = input("Allow? [y/N/a=always allow this tool this session]: ")
+        answer = answer.strip().lower()
+        if answer == "a":
+            _session_allowed_tools.add(name)
+            return True, None
+        if answer == "y":
+            return True, None
+        reason = input("Reason (optional, shown to the agent): ").strip()
+        return False, (reason or None)
 
 
 def stream_action(event: str, data: dict, *, console: Console | None = None) -> None:
@@ -372,6 +398,9 @@ def stream_action(event: str, data: dict, *, console: Console | None = None) -> 
                 )
             )
             return
+        if name == "spawn_agents":
+            _print(_render_spawn_agents_result(content))
+            return
         max_len = 600
         if len(content) > max_len:
             content = (
@@ -380,13 +409,74 @@ def stream_action(event: str, data: dict, *, console: Console | None = None) -> 
                 + str(len(content))
                 + " chars total)"
             )
+        from rich.markup import escape
+
         _print(
             Panel(
-                content,
+                escape(content),
                 title=f"[dim]← Result from {name}[/dim]",
                 border_style="dim",
             )
         )
+    elif event == "child_stderr":
+        # A spawn_agents child's own stream_action_stderr output, forwarded
+        # live instead of sitting buffered and discarded until the whole
+        # batch finishes (or is dropped entirely unless JSON parsing fails).
+        # Escape the WHOLE assembled body (including the literal "[" "]"
+        # around the agent name) as one unit, then add real markup outside
+        # that — the line is the child's own already-rendered panel output,
+        # which can itself contain "[...]" (e.g. a todo status label), and
+        # escaping only the variables while leaving literal brackets typed
+        # around them unescaped does not stop Rich from parsing those.
+        from rich.markup import escape
+
+        agent = data.get("agent", "?")
+        line = data.get("line", "")
+        body = escape(f"  │ [{agent}] {line}")
+        _print(f"[dim]{body}[/dim]")
+
+
+def _render_spawn_agents_result(content: str):
+    """A small table instead of a wall of raw JSON, when it parses cleanly.
+
+    ``content`` may already be truncated (see truncate_tool_output) — a cut
+    mid-JSON is expected sometimes, not a bug, so fall back to the plain
+    panel rather than raising.
+    """
+    fallback = Panel(
+        content[:600] + ("..." if len(content) > 600 else ""),
+        title="[dim]← Result from spawn_agents[/dim]",
+        border_style="dim",
+    )
+    try:
+        results = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return fallback
+    if not isinstance(results, list):
+        return fallback
+
+    table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
+    table.add_column("Agent")
+    table.add_column("OK")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Turns", justify="right")
+    table.add_column("Session")
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        ok_text = "[green]✓[/green]" if r.get("ok") else "[red]✗[/red]"
+        tokens = (r.get("usage") or {}).get("total_tokens", 0)
+        session = str(r.get("session_id") or "-")[:8]
+        table.add_row(
+            str(r.get("agent", "?")),
+            ok_text,
+            str(tokens),
+            str(r.get("turns", "-")),
+            session,
+        )
+    return Panel(
+        table, title="[cyan]☰ spawn_agents results[/cyan]", border_style="cyan"
+    )
 
 
 def stream_action_stderr(event: str, data: dict) -> None:
@@ -405,11 +495,18 @@ def print_sessions(sessions: list[tuple[Path, float]]) -> None:
     table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
     table.add_column("#", style="dim", width=3)
     table.add_column("Session ID", style="cyan")
+    table.add_column("Agent", style="magenta")
+    table.add_column("Preview", style="white")
     table.add_column("Last modified", style="dim")
+    from rich.markup import escape
+
     for idx, (p, ts) in enumerate(sessions):
+        info = load_session_info(p.name)
         table.add_row(
             str(idx),
             p.name,
+            escape(info.get("agent") or "-"),
+            escape(info.get("preview") or "-"),
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
         )
     console.print(table)
@@ -417,7 +514,7 @@ def print_sessions(sessions: list[tuple[Path, float]]) -> None:
 
 def pick_agents(agents: dict[str, Agent] = READY_AGENTS) -> str | None:
     if not agents:
-        console.print("[dim]No Agnets found.[/dim]")
+        console.print("[dim]No agents found.[/dim]")
         return None
     choices = [
         questionary.Choice(

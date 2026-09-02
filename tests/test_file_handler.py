@@ -48,10 +48,19 @@ class TestWriteFile(unittest.TestCase):
 
     def test_replaces_first_occurrence(self):
         target = self.root / "code.py"
-        target.write_text("a = 1\na = 1\n")
+        target.write_text("a = 1\nb = 2\n")
         result = write_file([{"path": str(target), "old": "a = 1", "new": "a = 2"}])
-        self.assertEqual(target.read_text(), "a = 2\na = 1\n")
+        self.assertEqual(target.read_text(), "a = 2\nb = 2\n")
         self.assertIn("updated successfully", result)
+
+    def test_multiple_occurrences_reports_a_count_and_replaces_only_the_first(self):
+        target = self.root / "code.py"
+        target.write_text("a = 1\na = 1\na = 1\n")
+        result = write_file([{"path": str(target), "old": "a = 1", "new": "a = 2"}])
+        self.assertEqual(target.read_text(), "a = 2\na = 1\na = 1\n")
+        self.assertIn("matches 3 times", result)
+        self.assertIn("only the first was replaced", result)
+        self.assertNotIn("updated successfully", result)
 
     def test_reports_missing_search_text(self):
         target = self.root / "code.py"
@@ -252,6 +261,27 @@ class TestReadFile(unittest.TestCase):
         result = read_file(str(self.path), start_line=2, end_line=3)
         self.assertTrue(result["ok"])
         self.assertEqual(result["content"], ["line2", "line3"])
+
+    def test_envelope_has_path_and_total_lines(self):
+        import os
+
+        result = read_file(str(self.path))
+        self.assertEqual(result["path"], os.path.abspath(str(self.path)))
+        self.assertEqual(result["total_lines"], 4)
+        self.assertEqual(result["start_line"], 1)
+        self.assertEqual(result["end_line"], 4)
+
+    def test_envelope_reflects_the_requested_slice(self):
+        result = read_file(str(self.path), start_line=2, end_line=3)
+        self.assertEqual(result["start_line"], 2)
+        self.assertEqual(result["end_line"], 3)
+        self.assertEqual(result["total_lines"], 4)
+
+    def test_end_line_past_total_is_clamped(self):
+        result = read_file(str(self.path), start_line=3, end_line=999)
+        self.assertEqual(result["end_line"], 4)
+        self.assertEqual(result["total_lines"], 4)
+        self.assertEqual(result["content"], ["line3", "line4"])
 
 
 class TestPathGuards(unittest.TestCase):

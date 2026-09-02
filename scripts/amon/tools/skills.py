@@ -5,7 +5,10 @@ import os
 import frontmatter
 from pathlib import Path
 
+from config import EXCLUDED_DIRS
+
 SCHEME = "skill://"
+RESOURCE_LIST_CAP = 200
 
 
 def _strip_scheme(resource: str) -> str:
@@ -68,24 +71,33 @@ def build_skill_catalog(
     return catalog
 
 
-skill_catalog = build_skill_catalog()
-
-
 def load_skill(skill_path: Path | str) -> str:
     path = Path(skill_path)
     cwd = Path.cwd()
     content: str = ""
     resources: str = ""
+    shown = 0
+    skipped = 0
     for p in path.rglob("*"):
+        if any(part in EXCLUDED_DIRS for part in p.relative_to(path).parts):
+            continue
         if p.name == "SKILL.md":
             post = frontmatter.load(p)
             content = post.content
-        else:
-            try:
-                rel = p.relative_to(cwd)
-            except ValueError:
-                rel = p
+            continue
+        try:
+            rel = p.relative_to(cwd)
+        except ValueError:
+            rel = p
+        if shown < RESOURCE_LIST_CAP:
             resources += f"{rel}\n"
+            shown += 1
+        else:
+            skipped += 1
+    if skipped:
+        resources += (
+            f"... and {skipped} more not shown (capped at {RESOURCE_LIST_CAP})\n"
+        )
     return content + "resources:\n" + resources
 
 

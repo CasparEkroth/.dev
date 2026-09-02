@@ -102,6 +102,12 @@ class Agent(BaseModel):
 
             stream_actions = stream_action_stderr
 
+        event_log = None
+        if os.environ.get("AMON_EVENTS"):
+            from scripts.amon.agent_loop import file_event_log
+
+            event_log = file_event_log
+
         return await asyncio.to_thread(
             run_agent,
             system_prompt=self.system_prompt,
@@ -126,6 +132,8 @@ class Agent(BaseModel):
             system_prompt_template=self.system_prompt_template,
             stream_actions=stream_actions,
             max_tool_output_chars=self.max_tool_output_chars,
+            agent_name=self.name,
+            event_log=event_log,
         )
 
 
@@ -140,9 +148,20 @@ def load_ready_agents() -> dict[str, Agent]:
         if path.is_dir():
             for f in path.glob("*.json"):
                 try:
-                    agents[f.stem] = Agent.from_file(f)
+                    agent = Agent.from_file(f)
                 except Exception as exc:  # FileNotFound, JSON, Validation, etc.
                     logger.warning("Skipping agent %s: %s", f.name, exc)
+                    continue
+                if agent.name != f.stem:
+                    logger.warning(
+                        "Agent file %s has name %r but is keyed as %r "
+                        "(--agent %r / spawn_agents will use the filename stem)",
+                        f.name,
+                        agent.name,
+                        f.stem,
+                        f.stem,
+                    )
+                agents[f.stem] = agent
     return agents
 
 
@@ -185,6 +204,31 @@ async def run_jobs(jobs: list[dict]) -> list[dict]:
             return _failed(agent_name, task, str(e))
 
     return list(await asyncio.gather(*[run_one(j) for j in jobs]))
+
+
+async def _drain_stderr(stream: asyncio.StreamReader, agent_name: str) -> bytes:
+    """Read a child's stderr line by line, forwarding it live when
+    AMON_STREAM is set (inherited from the parent's env — see spawn_agents'
+    `env`), while still returning the full bytes for the JSON-parse-failure
+    fallback path. Previously this only ever showed up in that one fallback
+    case; every other run silently discarded it until the whole batch
+    finished.
+    """
+    stream_live = bool(os.environ.get("AMON_STREAM"))
+    chunks: list[bytes] = []
+    while True:
+        line = await stream.readline()
+        if not line:
+            break
+        chunks.append(line)
+        if stream_live:
+            from scripts.amon.terminal import stream_action_stderr
+
+            stream_action_stderr(
+                "child_stderr",
+                {"agent": agent_name, "line": line.decode(errors="replace").rstrip()},
+            )
+    return b"".join(chunks)
 
 
 async def spawn_agents(
@@ -243,7 +287,14 @@ async def spawn_agents(
                 env=env,
             )
             try:
-                out, err = await asyncio.wait_for(proc.communicate(), timeout_s)
+                out, err = await asyncio.wait_for(
+                    asyncio.gather(
+                        proc.stdout.read(),
+                        _drain_stderr(proc.stderr, agent_name),
+                    ),
+                    timeout_s,
+                )
+                await proc.wait()
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()

@@ -221,3 +221,4 @@ vectors.json
 sessions/
 tool_output/
 .amon
+.claude

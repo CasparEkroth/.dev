@@ -4,17 +4,59 @@ from functools import partial
 from typing import Literal
 
 from config import DEFAULT_MAX_PARALLEL, DEFAULT_SHELL_TIMEOUT
+from scripts.amon.memory import load_session_cwd, save_session_cwd
 from scripts.amon.tools.agent import load_ready_agents
-from scripts.amon.tools.shell import run_shell, shell_readonly, READONLY_COMMANDS
+from scripts.amon.tools.shell import (
+    run_shell,
+    set_cwd,
+    shell_readonly,
+    READONLY_COMMANDS,
+)
 from shared.file_handler import read_file, write_file
 from scripts.amon.tools.skills import load_skill
 from scripts.amon.tools.todo import write_todos
 
 # Tools that accept server-side path/command guards (not model-visible params).
-_PATH_GUARDED_TOOLS = frozenset({"read_file", "write_file", "shell", "shell_readonly"})
+_PATH_GUARDED_TOOLS = frozenset(
+    {"read_file", "write_file", "shell", "shell_readonly", "set_cwd"}
+)
 _COMMAND_GUARDED_TOOLS = frozenset({"shell", "shell_readonly"})
 #: Tools that get the current session id bound server-side (not a model-visible param).
 _SESSION_BOUND_TOOLS = frozenset({"todo_write"})
+#: Tools whose 'cwd' argument defaults to the session's sticky set_cwd value
+#: (set on the same registry build, or loaded from `.meta.json` on resume)
+#: when the model omits it, instead of the tool's own hardcoded ".".
+_CWD_STICKY_TOOLS = frozenset({"shell", "shell_readonly"})
+
+
+def _bind_sticky_cwd(fn, cwd_state: dict):
+    """Default *fn*'s 'cwd' kwarg to `cwd_state["cwd"]` when the caller omits it."""
+
+    def wrapped(**kwargs):
+        if kwargs.get("cwd") is None and cwd_state.get("cwd"):
+            kwargs["cwd"] = cwd_state["cwd"]
+        return fn(**kwargs)
+
+    return wrapped
+
+
+def _bind_set_cwd(fn, cwd_state: dict, session_id: object | None):
+    """Make a successful `set_cwd` call update *cwd_state* (immediate effect
+    for the rest of this run) and persist to `.meta.json` (effect on resume).
+
+    *fn* raises on an invalid/denied directory, so no update happens unless
+    the underlying call actually succeeded.
+    """
+
+    def wrapped(cwd: str, **kwargs) -> str:
+        message = fn(cwd=cwd, **kwargs)
+        cwd_state["cwd"] = cwd
+        if session_id:
+            save_session_cwd(session_id, cwd)
+        return message
+
+    return wrapped
+
 
 _READONLY_CMDS_STR = ", ".join(sorted(READONLY_COMMANDS))
 
@@ -51,8 +93,12 @@ tool_registry = {
                         },
                         "cwd": {
                             "type": "string",
-                            "description": "Optional working directory inside workspace",
-                            "default": ".",
+                            "description": (
+                                "Optional working directory inside workspace. "
+                                "Omit to use the directory set by set_cwd "
+                                "(or the workspace root if that was never "
+                                "called)."
+                            ),
                         },
                         "timeout": {
                             "type": "integer",
@@ -90,8 +136,12 @@ tool_registry = {
                         },
                         "cwd": {
                             "type": "string",
-                            "description": "Optional working directory inside workspace",
-                            "default": ".",
+                            "description": (
+                                "Optional working directory inside workspace. "
+                                "Omit to use the directory set by set_cwd "
+                                "(or the workspace root if that was never "
+                                "called)."
+                            ),
                         },
                         "timeout": {
                             "type": "integer",
@@ -111,7 +161,12 @@ tool_registry = {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a section off a file",
+                "description": (
+                    "Read a section off a file. Returns 'total_lines' (the "
+                    "file's full line count) alongside 'content' — check it "
+                    "instead of guessing whether you're near the end of the "
+                    "file before requesting another chunk."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -245,6 +300,36 @@ tool_registry = {
             },
         },
         "fn": write_todos,
+        "requires_confirmation": True,
+    },
+    "set_cwd": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "set_cwd",
+                "description": (
+                    "Set the default working directory for 'shell' and "
+                    "'shell_readonly' calls for the rest of this session — "
+                    "they use it automatically whenever their own 'cwd' "
+                    "argument is omitted. Call this once instead of "
+                    "repeating the same 'cwd' on every shell call; call it "
+                    "again to switch directories. Does not affect "
+                    "'read_file'/'write_file', which take their own path "
+                    "directly."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "cwd": {
+                            "type": "string",
+                            "description": "Directory to make the default going forward",
+                        },
+                    },
+                    "required": ["cwd"],
+                },
+            },
+        },
+        "fn": set_cwd,
         "requires_confirmation": True,
     },
 }
@@ -383,6 +468,11 @@ def get_registry(
     denied_commands = list(denied_commands or [])
     guard = allow_paths or deny_paths or denied_commands
 
+    # Shared across every tool built by this call, so a set_cwd call takes
+    # immediate effect on shell/shell_readonly calls later in the same run,
+    # not just after the session's .meta.json is re-read on the next prompt.
+    cwd_state = {"cwd": load_session_cwd(session_id) if session_id else None}
+
     out: dict = {}
     for k, v in tool_registry.items():
         if k not in tools:
@@ -401,5 +491,9 @@ def get_registry(
             entry["fn"] = partial(
                 entry["fn"], session_id=str(session_id) if session_id else None
             )
+        if k in _CWD_STICKY_TOOLS:
+            entry["fn"] = _bind_sticky_cwd(entry["fn"], cwd_state)
+        if k == "set_cwd":
+            entry["fn"] = _bind_set_cwd(entry["fn"], cwd_state, session_id)
         out[k] = entry
     return out

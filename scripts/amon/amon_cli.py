@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 from uuid import UUID, uuid4
 
@@ -12,13 +13,19 @@ from scripts.amon.tools.registry import (
     get_registry,
     READY_AGENTS,
 )
-from scripts.amon.agent_loop import _compact_history, run_agent
+from scripts.amon.agent_loop import (
+    _compact_history,
+    _compaction_plan,
+    file_event_log,
+    run_agent,
+)
 from scripts.amon import terminal
 from scripts.amon.memory import (
     clear_sessions,
     get_list_of_sessions,
     load_context_tokens,
     load_session,
+    load_session_info,
     remove_session,
     save_session,
 )
@@ -198,10 +205,51 @@ def main() -> None:
     _run_interactive(args)
 
 
+def _run_agent_cancelable(**kwargs):
+    """run_agent, but a first Ctrl+C requests a graceful stop instead of an
+    immediate hard abort.
+
+    Installs a SIGINT handler for the duration of the call that sets a flag
+    run_agent polls between turns and between tool calls within a turn — the
+    current step (an in-flight LLM/tool call) still finishes, then the
+    partial run is persisted and returned normally as a non-ok AgentResult.
+    A second Ctrl+C while still running restores default SIGINT behavior and
+    raises KeyboardInterrupt immediately, same as the old hard-cancel-only
+    behavior — the caller's existing `except KeyboardInterrupt` handles that.
+    """
+    cancelled = {"requested": False}
+
+    def _handler(signum, frame):
+        if cancelled["requested"]:
+            signal.default_int_handler(signum, frame)
+            return
+        cancelled["requested"] = True
+        terminal.console.print(
+            "\n[yellow]Stopping after the current step… "
+            "press Ctrl+C again to force quit.[/yellow]"
+        )
+
+    previous_handler = signal.signal(signal.SIGINT, _handler)
+    try:
+        return run_agent(cancel_fn=lambda: cancelled["requested"], **kwargs)
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+
+
 def _run_interactive(args) -> None:
     session_id = _resolve_session_id(args)
     if session_id is None:
         return
+
+    # A resumed session recorded which agent last ran it; a mismatch here
+    # is almost always the user forgetting --agent, not an intentional
+    # switch — the /agent picker is the intentional path.
+    session_agent = load_session_info(session_id).get("agent")
+    if session_agent and session_agent != args.agent:
+        terminal.console.print(
+            f"[yellow]Warning: this session was last run with agent "
+            f"'{session_agent}', but you're resuming with '{args.agent}'.[/yellow]"
+        )
 
     terminal.update_footer(context=load_context_tokens(session_id))
     terminal.show_welcome(session_id)
@@ -229,7 +277,7 @@ def _run_interactive(args) -> None:
         if user_input == ("/agent"):
             t_agent = terminal.pick_agents()
             if t_agent is None or t_agent == "[cancel]":
-                terminal.console.print("[dim]No agent picket.[/dim]")
+                terminal.console.print("[dim]No agent picked.[/dim]")
                 terminal.console.print(f"[dim]Current agent: {agent.name}")
                 continue
             agent = READY_AGENTS.get(t_agent)
@@ -241,7 +289,7 @@ def _run_interactive(args) -> None:
 
         if user_input == "/new":
             session_id = uuid4()
-            terminal.reste_context()
+            terminal.reset_context()
             terminal.console.print("[dim]New session started.[/dim]")
             continue
 
@@ -249,6 +297,9 @@ def _run_interactive(args) -> None:
             conversation = load_session(session_id)
             if not conversation:
                 terminal.console.print("[dim]Session is empty.[/dim]")
+                continue
+            if _compaction_plan(conversation) is None:
+                terminal.console.print("[dim]Nothing to compact yet.[/dim]")
                 continue
             # Same path the auto-compactor uses: strips any dangling
             # tool_calls first and only summarizes the safe head, keeping the
@@ -279,7 +330,7 @@ def _run_interactive(args) -> None:
 
         with terminal.spinner_context():
             try:
-                result = run_agent(
+                result = _run_agent_cancelable(
                     system_prompt=agent.system_prompt,
                     user_input=user_input,
                     tool_registry=get_registry(
@@ -303,6 +354,8 @@ def _run_interactive(args) -> None:
                     model=agent.model,
                     system_prompt_template=agent.system_prompt_template,
                     max_tool_output_chars=agent.max_tool_output_chars,
+                    agent_name=agent.name,
+                    event_log=file_event_log if os.environ.get("AMON_EVENTS") else None,
                 )
             except KeyboardInterrupt:
                 # Hard cancel: in-flight HTTP is aborted; no delayed receive.

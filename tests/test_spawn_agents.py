@@ -17,17 +17,40 @@ PAYLOAD = {
 }
 
 
+class _FakeStream:
+    """Minimal stand-in for an asyncio.StreamReader.
+
+    Supports ``read()`` (all bytes at once, after an optional delay — used
+    for stdout) and ``readline()`` (one line at a time then EOF — used for
+    stderr, since _drain_stderr reads it live).
+    """
+
+    def __init__(self, data: bytes, delay: float = 0.0):
+        self._data = data
+        self._lines = data.splitlines(keepends=True)
+        self._i = 0
+        self._delay = delay
+
+    async def read(self):
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return self._data
+
+    async def readline(self):
+        if self._i >= len(self._lines):
+            return b""
+        line = self._lines[self._i]
+        self._i += 1
+        return line
+
+
 class FakeProc:
     """Stands in for an asyncio subprocess."""
 
     def __init__(self, stdout=b"", stderr=b"", delay=0.0):
-        self._stdout, self._stderr, self._delay = stdout, stderr, delay
+        self.stdout = _FakeStream(stdout, delay=delay)
+        self.stderr = _FakeStream(stderr)
         self.killed = False
-
-    async def communicate(self):
-        if self._delay:
-            await asyncio.sleep(self._delay)
-        return self._stdout, self._stderr
 
     def kill(self):
         self.killed = True
@@ -152,19 +175,15 @@ def test_max_parallel_caps_concurrent_children():
     live = {}
 
     def make():
-        async def release(_p=None):
-            live["now"] -= 1
-            return json.dumps(PAYLOAD).encode(), b""
-
         proc = FakeProc(stdout=json.dumps(PAYLOAD).encode(), delay=0.02)
-        original = proc.communicate
+        original_read = proc.stdout.read
 
-        async def communicate():
-            out = await original()
+        async def read():
+            out = await original_read()
             live["now"] -= 1
             return out
 
-        proc.communicate = communicate
+        proc.stdout.read = read
         return proc
 
     jobs = [{"agent": "w", "task": f"t{i}"} for i in range(6)]
@@ -172,6 +191,43 @@ def test_max_parallel_caps_concurrent_children():
         results = asyncio.run(spawn_agents(jobs, max_parallel=2))
     assert len(results) == 6
     assert live["peak"] <= 2
+
+
+def test_stderr_forwarded_live_when_amon_stream_set(monkeypatch):
+    monkeypatch.setenv("AMON_STREAM", "1")
+    proc = FakeProc(
+        stdout=json.dumps(PAYLOAD).encode(),
+        stderr=b"line one\nline two\n",
+    )
+    with (
+        _exec_patch(proc),
+        patch("scripts.amon.terminal.stream_action_stderr") as forwarded,
+    ):
+        asyncio.run(spawn_agents([{"agent": "worker", "task": "do it"}]))
+    events = [c.args for c in forwarded.call_args_list]
+    assert ("child_stderr", {"agent": "worker", "line": "line one"}) in events
+    assert ("child_stderr", {"agent": "worker", "line": "line two"}) in events
+
+
+def test_stderr_not_forwarded_without_amon_stream(monkeypatch):
+    monkeypatch.delenv("AMON_STREAM", raising=False)
+    proc = FakeProc(stdout=json.dumps(PAYLOAD).encode(), stderr=b"line one\n")
+    with (
+        _exec_patch(proc),
+        patch("scripts.amon.terminal.stream_action_stderr") as forwarded,
+    ):
+        asyncio.run(spawn_agents([{"agent": "worker", "task": "do it"}]))
+    forwarded.assert_not_called()
+
+
+def test_stderr_still_available_for_the_json_failure_fallback(monkeypatch):
+    monkeypatch.delenv("AMON_STREAM", raising=False)
+    proc = FakeProc(stdout=b"not json", stderr=b"boom\ndetails here\n")
+    with _exec_patch(proc):
+        results = asyncio.run(spawn_agents([{"agent": "w", "task": "t"}]))
+    assert results[0]["ok"] is False
+    assert "boom" in results[0]["error"]
+    assert "details here" in results[0]["error"]
 
 
 def test_all_jobs_are_reported():

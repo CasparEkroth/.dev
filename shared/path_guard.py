@@ -181,3 +181,27 @@ def check_command_allowed(
             raise PermissionError(
                 f"Command '{name}' is blocked by denied_commands {list(denied_commands)}"
             )
+
+
+def check_no_traversal_in_args(
+    command: list[str] | str,
+    allow_paths: list[str] | None = None,
+) -> None:
+    """Reject any argument with a ``..`` path segment when ``allow_paths`` is set.
+
+    No-op when ``allow_paths`` is empty/None. Absolute paths are not rejected.
+    """
+    if not allow_paths:
+        return
+    if isinstance(command, list):
+        tokens = command
+    else:
+        try:
+            tokens = shlex.split(command, posix=True)
+        except ValueError:
+            tokens = command.split()
+    for tok in tokens:
+        if ".." in Path(tok).parts:
+            raise PermissionError(
+                f"Argument '{tok}' contains '..' — blocked because allow_paths is set"
+            )

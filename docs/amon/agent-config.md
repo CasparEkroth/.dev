@@ -83,15 +83,19 @@ Enforcement points:
   boundary: those tools never shell out.
 - `shell` / `shell_readonly` — `cwd` is checked against path rules, and
   command-position names against `denied_commands`. `shell_readonly` still
-  applies its existing whitelist on top.
+  applies its existing whitelist on top. When `allow_paths` is set, every
+  argument is also checked for a literal `..` path segment and rejected if
+  found. Absolute path arguments are not rejected.
 
-**Known limitation (load-bearing):** path/command restriction on `shell` can
-only cover `cwd` and the literal command name(s). A permitted command can still
-read/write paths outside any `allow_paths` tree via absolute paths or `cd`
-inside the same invocation (e.g. `cat /etc/passwd`, `cd / && rm -rf whatever`).
-Full containment needs OS-level sandboxing (container, chroot, bwrap), which is
-out of scope. Treat `allow_paths` + `denied_commands` as a **guardrail against
-accidental damage**, not a security sandbox for `shell`.
+**Known limitation:** path/command restriction on `shell` covers `cwd`, the
+literal command name(s), and (when `allow_paths` is set) a `..` check on
+arguments. A permitted command can still read/write paths outside any
+`allow_paths` tree via an absolute path or `cd` inside the same invocation
+(e.g. `cat /etc/passwd`, `cd / && rm -rf whatever`). Full containment needs
+OS-level sandboxing (container, chroot, bwrap), which is out of scope. Treat
+`allow_paths` + `denied_commands` as a guardrail against accidental damage,
+not a security sandbox for `shell`. The shipped `default`/`dev` agents deny
+`sudo`/`dd`/`mkfs` by default.
 
 Example: [examples/path-restricted-agent.json](examples/path-restricted-agent.json).
 
@@ -113,6 +117,7 @@ Built-in tool names today:
 - `write_file`
 - `load_skill`
 - `todo_write`
+- `set_cwd`
 - `spawn_agents` (registered after agents load)
 
 Notable tool behaviour:
@@ -123,14 +128,40 @@ Notable tool behaviour:
   expires the output captured so far is returned instead of lost. A shell
   string has no argv boundary, so prefer a list unless shell features are
   needed. `shell_readonly` takes `timeout` too, but no shell string — its
-  whitelist is enforced on `command[0]`.
+  whitelist (`ls`, `grep`, `find`, `wc`, `tree`, `pwd`, `git`) is enforced on
+  `command[0]`; `git`'s subcommand is further restricted to
+  `status`/`log`/`diff`/`show`/`branch`/`blame`/`rev-parse`, and `find -exec`
+  is blocked. `rg` and `fd` are not whitelisted. Both default their `cwd` to
+  the session's sticky value set via `set_cwd` (falling back to `.` if that
+  was never called) whenever the call omits `cwd` — an explicit `cwd` on any
+  individual call still overrides it for that call only.
+- `read_file` returns `path`, `start_line`, `end_line`, `total_lines`
+  alongside `content`. `start_line`/`end_line` are the range actually served
+  (end clamped to the file's length); `total_lines` is the full file length.
+- `load_skill` excludes directories listed in `EXCLUDED_DIRS` (`.git`,
+  `__pycache__`, `node_modules`, `.venv`, ...) from the resource list, and
+  caps it at `RESOURCE_LIST_CAP` (200) entries with a trailing
+  "N more not shown" note when truncated.
 - `write_file` creates a file (and any missing parent directories) when the
   `path` does not exist, `old` is empty and `new` holds the content. For an
   existing file an empty `old` appends; otherwise the first occurrence of
   `old` is replaced. Pass `"overwrite": true` on an item to replace the
   file's entire contents with `new` in one call (creating it and parent
   directories if needed, `old` ignored) — use this for a full rewrite or a
-  new implementation instead of chaining many small `old`/`new` patches.
+  new implementation instead of chaining many small `old`/`new` patches. If
+  `old` matches more than once, only the first occurrence is replaced (as
+  always) but the result line now says so explicitly (`"'old' matches N
+  times, only the first was replaced — narrow the match to be unambiguous"`)
+  instead of the plain success message.
+- `set_cwd` sets the default `cwd` for `shell`/`shell_readonly` calls in this
+  session that omit their own `cwd` — call it once instead of repeating the
+  same directory on every shell call. Validated the same way `cwd` already
+  is (must exist, must pass `allow_paths`/`deny_paths` if configured); a
+  rejected call leaves the previous sticky value (or none) untouched. Takes
+  effect immediately for the rest of the current run, and is also persisted
+  to the session's `.meta.json` so it's still the default after `--resume`.
+  Does not affect `read_file`/`write_file`, which take their own `path`
+  directly and have no `cwd` concept.
 - `todo_write` sets/replaces the checklist of steps for the current task.
   Shape: `todos: [{content, status}]` with `status` in
   `pending` / `in_progress` / `completed`. Each call replaces the **entire**

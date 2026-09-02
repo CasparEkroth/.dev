@@ -75,6 +75,53 @@ def test_load_ready_agents(tmp_path, monkeypatch):
         assert agents["mock_agent"].name == "mock_agent"
 
 
+def test_load_ready_agents_warns_on_name_stem_mismatch(tmp_path, monkeypatch, caplog):
+    from pathlib import Path
+
+    agents_dir = tmp_path / ".amon" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "renamed_file.json").write_text(
+        json.dumps(
+            {
+                "name": "original_name",
+                "description": "mock",
+                "system_prompt": "hi",
+                "tools": [],
+                "allowed_tools": [],
+            }
+        )
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    missing = tmp_path / "missing-agents"
+    with (patch("scripts.amon.tools.agent.Path") as path_cls,):
+        real_path = Path
+
+        def ctor(arg=None):
+            if arg is None:
+                return real_path()
+            if arg == "/etc/.amon/agents":
+                return missing
+            return real_path(arg)
+
+        path_cls.side_effect = ctor
+        path_cls.home.return_value = missing
+        path_cls.cwd.return_value = tmp_path
+
+        with caplog.at_level("WARNING"):
+            agents = load_ready_agents()
+
+    # Filename stem still wins as the map key...
+    assert "renamed_file" in agents
+    assert agents["renamed_file"].name == "original_name"
+    # ...but the mismatch is surfaced instead of silently swallowed.
+    assert any(
+        "renamed_file" in r.getMessage() and "original_name" in r.getMessage()
+        for r in caplog.records
+    )
+
+
 def test_agent_result_to_dict():
     result = AgentResult(
         ok=True,
@@ -174,6 +221,7 @@ def test_run_task_forwards_new_fields():
     assert kwargs["model"] == "pinned-model"
     assert kwargs["max_tool_output_chars"] == 50_000
     assert kwargs["stream_actions"] is None
+    assert kwargs["agent_name"] == "a"
     # mcp_servers is a stub: accepted on the config, not yet wired into a run.
     assert "mcp_servers" not in kwargs
 
@@ -209,13 +257,18 @@ def test_get_registry_does_not_leak_permissions_between_agents():
 def test_get_registry_shares_schema_and_fn():
     from scripts.amon.tools.registry import get_registry, tool_registry
 
-    entry = get_registry(tools=["shell"], allowed_tools=["shell"])["shell"]
-    assert entry["fn"] is tool_registry["shell"]["fn"]
-    assert entry["schema"] is tool_registry["shell"]["schema"]
+    # shell/shell_readonly always get a sticky-cwd wrapper (TestCwdStickiness
+    # covers that) — use a tool with no such wrapping to check the plain
+    # "untouched by default" case.
+    entry = get_registry(tools=["load_skill"], allowed_tools=["load_skill"])[
+        "load_skill"
+    ]
+    assert entry["fn"] is tool_registry["load_skill"]["fn"]
+    assert entry["schema"] is tool_registry["load_skill"]["schema"]
 
 
 def test_wildcard_bare_string_normalized_but_not_expanded(tmp_path):
-    """"*" becomes ["*"] at load time, but stays unexpanded.
+    """ "*" becomes ["*"] at load time, but stays unexpanded.
 
     Regression for the bug where eager expansion at Agent-load time ran
     before spawn_agents was registered, so wildcard agents silently never
@@ -306,7 +359,10 @@ def test_get_registry_binds_path_guards_without_schema_leak(tmp_path):
     assert reg["load_skill"]["fn"] is tool_registry["load_skill"]["fn"]
 
     assert isinstance(reg["read_file"]["fn"], partial)
-    assert isinstance(reg["shell"]["fn"], partial)
+    # shell also gets the sticky-cwd wrapper (see TestCwdStickiness), so its
+    # guard-bound partial is one layer deeper — checked functionally below
+    # instead of by isinstance.
+    assert reg["shell"]["fn"] is not tool_registry["shell"]["fn"]
 
     ok = reg["read_file"]["fn"](path=str(allowed / "f.txt"))
     assert ok["ok"] is True
@@ -318,6 +374,122 @@ def test_get_registry_binds_path_guards_without_schema_leak(tmp_path):
 
     with pytest.raises(PermissionError, match="denied_commands"):
         reg["shell"]["fn"](command=["rm", "-rf", "x"], cwd=str(allowed))
+
+
+class TestCwdStickiness:
+    """set_cwd's whole point: shell/shell_readonly default to it once set,
+    without the model repeating 'cwd' on every call — both immediately
+    within the same registry build and, via .meta.json, across resumes."""
+
+    def test_shell_defaults_to_process_cwd_when_never_set(self, tmp_path, monkeypatch):
+        from scripts.amon.tools.registry import get_registry
+
+        (tmp_path / "m.txt").write_text("x")
+        monkeypatch.chdir(tmp_path)
+        reg = get_registry(tools=["shell"], allowed_tools=["shell"])
+        # No cwd passed and no set_cwd call yet — falls through to run_shell's
+        # own default ("."), unchanged from before this feature existed.
+        out = reg["shell"]["fn"](command=["ls"])
+        assert "m.txt" in out
+
+    def test_set_cwd_takes_immediate_effect_on_shell_in_the_same_registry(
+        self, tmp_path
+    ):
+        from scripts.amon.tools.registry import get_registry
+
+        (tmp_path / "m.txt").write_text("x")
+        reg = get_registry(
+            tools=["shell", "set_cwd"], allowed_tools=["shell", "set_cwd"]
+        )
+        reg["set_cwd"]["fn"](cwd=str(tmp_path))
+        # No cwd argument this time — should use the sticky value just set.
+        out = reg["shell"]["fn"](command=["ls"])
+        assert "m.txt" in out
+
+    def test_explicit_cwd_still_overrides_the_sticky_default(self, tmp_path):
+        from scripts.amon.tools.registry import get_registry
+
+        sticky_dir = tmp_path / "sticky"
+        sticky_dir.mkdir()
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        (other_dir / "only-here.txt").write_text("x")
+
+        reg = get_registry(
+            tools=["shell", "set_cwd"], allowed_tools=["shell", "set_cwd"]
+        )
+        reg["set_cwd"]["fn"](cwd=str(sticky_dir))
+        out = reg["shell"]["fn"](command=["ls"], cwd=str(other_dir))
+        assert "only-here.txt" in out
+
+    def test_a_rejected_set_cwd_call_does_not_change_the_sticky_default(self, tmp_path):
+        from scripts.amon.tools.registry import get_registry
+
+        (tmp_path / "m.txt").write_text("x")
+        reg = get_registry(
+            tools=["shell", "set_cwd"], allowed_tools=["shell", "set_cwd"]
+        )
+        import pytest
+
+        with pytest.raises(NotADirectoryError):
+            reg["set_cwd"]["fn"](cwd=str(tmp_path / "does-not-exist"))
+        # Sticky default must still be untouched (".").
+        out = reg["shell"]["fn"](command=["ls"], cwd=str(tmp_path))
+        assert "m.txt" in out
+
+    def test_set_cwd_calls_save_session_cwd_with_the_session_id(self, tmp_path):
+        from uuid import uuid4
+
+        from scripts.amon.tools.registry import get_registry
+
+        session_id = uuid4()
+        reg = get_registry(
+            tools=["set_cwd"], allowed_tools=["set_cwd"], session_id=session_id
+        )
+        with patch("scripts.amon.tools.registry.save_session_cwd") as save:
+            reg["set_cwd"]["fn"](cwd=str(tmp_path))
+        save.assert_called_once_with(session_id, str(tmp_path))
+
+    def test_a_recorded_session_cwd_seeds_the_next_registry_build(self, tmp_path):
+        from uuid import uuid4
+
+        from scripts.amon.tools.registry import get_registry
+
+        (tmp_path / "resumed.txt").write_text("x")
+        session_id = uuid4()
+        with patch(
+            "scripts.amon.tools.registry.load_session_cwd", return_value=str(tmp_path)
+        ):
+            reg = get_registry(
+                tools=["shell"], allowed_tools=["shell"], session_id=session_id
+            )
+        out = reg["shell"]["fn"](command=["ls"])
+        assert "resumed.txt" in out
+
+    def test_no_session_id_skips_the_meta_json_lookup(self):
+        from scripts.amon.tools.registry import get_registry
+
+        with patch("scripts.amon.tools.registry.load_session_cwd") as load:
+            get_registry(tools=["shell"], allowed_tools=["shell"], session_id=None)
+        load.assert_not_called()
+
+    def test_set_cwd_respects_agent_allow_paths(self, tmp_path):
+        from scripts.amon.tools.registry import get_registry
+
+        allowed = tmp_path / "ok"
+        allowed.mkdir()
+        outside = tmp_path / "nope"
+        outside.mkdir()
+
+        reg = get_registry(
+            tools=["set_cwd"],
+            allowed_tools=["set_cwd"],
+            allow_paths=[str(allowed / "**")],
+        )
+        import pytest
+
+        with pytest.raises(PermissionError, match="allow_paths"):
+            reg["set_cwd"]["fn"](cwd=str(outside))
 
 
 def test_run_task_forwards_path_guards_to_registry():
@@ -505,9 +677,23 @@ def test_spawn_agents_tool_returns_json_string():
 
     payload = json.dumps({"ok": True, "result": "hi", "error": None}).encode()
 
+    class _FakeStream:
+        def __init__(self, data: bytes):
+            self._data = data
+
+        async def read(self):
+            return self._data
+
+        async def readline(self):
+            return b""
+
     class FakeProc:
-        async def communicate(self):
-            return payload, b""
+        def __init__(self):
+            self.stdout = _FakeStream(payload)
+            self.stderr = _FakeStream(b"")
+
+        async def wait(self):
+            return 0
 
     async def fake_exec(*cmd, **kwargs):
         return FakeProc()
