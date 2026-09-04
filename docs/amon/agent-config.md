@@ -109,6 +109,14 @@ when `get_registry` builds the agent's tools (not when the agent config
 loads) — this is what makes `spawn_agents` actually reachable from a
 wildcard agent, since it's only added to `tool_registry` after agents load.
 
+**Interactive confirm UI** (a tool call outside `allowed_tools`): prompts
+`Allow? [y/N/a=always allow this tool this session]`. `y` allows once; `a`
+allows this tool name for the rest of the REPL session without asking again
+(tracked in-process, cleared by `/new`); anything else (including bare `N`
+or Enter) denies, then optionally prompts `Reason (optional, shown to the
+agent):` and feeds that reason back to the model as part of the tool result
+so it can course-correct instead of retrying the same call blind.
+
 Built-in tool names today:
 
 - `shell`
@@ -191,9 +199,20 @@ Notable tool behaviour:
   JSON as a harness checkpoint even when some jobs fail. Children are separate
   processes, so one cannot corrupt shared state or outlive the parent. To share
   a checklist across parent and child, pass the same `session_id` on the job.
+  With `AMON_STREAM` set (inherited from the parent env), each child's stderr
+  is forwarded live line-by-line as it's read, not buffered until the whole
+  batch finishes — shown as dim `  │ [agent-name] line` output. In the interactive
+  terminal, a `spawn_agents` tool result that parses as the expected JSON list
+  renders as a table (agent, ok, tokens, turns, session) instead of raw JSON;
+  a truncated/malformed result falls back to the plain text panel.
 - Session artifacts live under `SESSIONS_DIR` (`AMON_SESSIONS_DIR` overrides):
   transcript file `{uuid}`, token meta `{uuid}.meta.json`, and optional todo
-  sidecar `{uuid}.todos.json`.
+  sidecar `{uuid}.todos.json`. The meta file also records `agent` (the agent
+  name that ran the session) and `preview` (first ~60 chars of the first
+  user task) on a brand-new session — shown in `/sessions` and the
+  `--resume` picker so both list more than a bare UUID and timestamp.
+  `--resume`/`--resume-id` warns (but still proceeds) if `--agent` differs
+  from the session's recorded `agent`.
 - Loading a session (resume, or any run with a `session_id`) strips any
   unfinished tool cycle from the transcript before it's sent to the model.
   An interrupt (Ctrl+C, crash) can land between persisting an assistant's
@@ -205,21 +224,52 @@ Notable tool behaviour:
   - **Auto (during a run):** when the last turn's `prompt_tokens` crosses
     `COMPACT_AT_TOKENS` (75% of `BASE_CONTEXT_WINDOW`), or as a retry after a
     failed model call. Unfinished tool cycles are stripped first so the model
-    never sees a half tool-call/result pair; everything before the last complete
-    tool-calling turn is LLM-summarized via `compact_conversation`; the complete
-    tail is kept. This only rewrites the in-memory conversation — the session
-    file on disk stays complete.
+    never sees a half tool-call/result pair; a trailing, not-yet-answered user
+    message (the current task, not history) is never folded into the summary
+    either. Everything else up through the last complete tool-calling turn is
+    LLM-summarized via `compact_conversation` into a **structured** JSON object
+    (`goal`, `done`, `open_questions`, `key_paths`) rather than a resummarized
+    message list; it's rendered into a single `role: user` message
+    (`[Earlier conversation summarized] Goal: … Done: … Open questions: … Key
+    paths: …`) that replaces the summarized head. The complete tail (unfinished
+    tool cycles stripped, current user turn) is kept as-is. This only rewrites
+    the in-memory conversation — the session file on disk stays complete.
   - **Hard trim** fallback (`_force_hard_trim`, keep last ~12 messages plus at
     most one leading system message) when the summary is unusable or a retry
     still fails — a long run keeps going instead of dying on context overflow.
   - If compaction and hard trim cannot recover after a retry, the run returns
     its partial result and error rather than losing everything.
-  - **Interactive `/compact`:** now shares `_compact_history` with
-    auto-compact (same unfinished-tool-cycle strip, same safe-tail handling),
-    then **rewrites** the session file with the result (`override=True`). No
-    hard-trim fallback here — if the summary call fails, `/compact` reports
-    failure and leaves the on-disk transcript untouched, rather than falling
-    back to a lossy trim the user didn't ask for.
+  - **Interactive `/compact`:** shares `_compaction_plan`/`_compact_history`
+    with auto-compact (same unfinished-tool-cycle strip, same safe-tail and
+    current-turn handling), then **rewrites** the session file with the result
+    (`override=True`). If there's nothing worth summarizing (e.g. only the
+    current unanswered user turn survives), it prints "Nothing to compact
+    yet." without calling the model. No hard-trim fallback here — if the
+    summary call fails, `/compact` reports failure and leaves the on-disk
+    transcript untouched, rather than falling back to a lossy trim the user
+    didn't ask for.
+  - With `AMON_EVENTS` set, auto-compact and hard-trim triggers are logged
+    (see **Observability** below).
+
+## Observability (`AMON_EVENTS`)
+
+Opt-in, off by default — a normal run pays no cost when unset. When
+`AMON_EVENTS` is non-empty, `run_agent` (interactive and headless/`Agent`)
+appends one JSON line per event to `{session_id}.events.jsonl` under
+`SESSIONS_DIR`, via `file_event_log`/`append_event`. An event with no
+session id (nothing to attach it to) is silently dropped rather than raised.
+
+Event shape: `{"ts", "session_id", "event", …}`, where `event` is one of:
+
+- `"turn"` — `turn` (1-indexed), `latency_s`, `usage` (that turn's token usage)
+- `"tool_call"` — `name`
+- `"tool_result"` — `name`, `latency_s`, `output_chars`
+- `"compact"` — `trigger` (`"threshold"` or `"retry"`), `method` (`"summary"`
+  or `"hard_trim"`), and `prompt_tokens` for threshold-triggered events
+
+This is separate from `AMON_STREAM` (live tool events to stderr for a human
+watching headless output) — `AMON_EVENTS` is a durable per-session log for
+later analysis, not a live view.
 
 ## Project-local override pattern
 

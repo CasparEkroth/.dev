@@ -59,7 +59,7 @@ CLI (amon)
 ## Doc map
 
 - [CLI](cli.md) — flags, sessions, interactive commands, headless mode, checklist UX
-- [Agent config](agent-config.md) — JSON schema, tools (incl. `todo_write`), path guards, compaction
+- [Agent config](agent-config.md) — JSON schema, tools (incl. `todo_write`), path guards, compaction, observability (`AMON_EVENTS`)
 - [Hooks](hooks.md) — events, env vars, Python/bash examples
 - [Skills](skills.md) — SKILL.md format, `skill://` URIs, catalog + load flow
 - [examples/](examples/) — copy-paste agent/hook/skill artifacts

@@ -77,6 +77,14 @@ Runtime directories (set **before** process start; bound at `config` import):
 | `AMON_SESSIONS_DIR` | `scripts/amon/config/sessions/` | Transcript `{uuid}`, meta `{uuid}.meta.json`, todos `{uuid}.todos.json` |
 | `AMON_TOOL_OUTPUT_DIR` | `scripts/amon/config/tool_output/` | Spill files for truncated tool output |
 
+Meta also carries `agent` and `preview` (recorded once, on a brand-new
+session) — shown alongside the session id in `/sessions` and the `--resume`
+picker instead of a bare UUID + timestamp.
+
+Set `AMON_EVENTS=1` for opt-in structured logging (`{session_id}.events.jsonl`:
+per-turn latency/usage, per-tool latency, compaction triggers). Off by
+default. Details: [agent-config](agent-config.md#observability-amon_events).
+
 ## Interactive slash commands
 
 Typed at the `>` prompt (must be exact matches unless noted):
@@ -87,7 +95,7 @@ Typed at the `>` prompt (must be exact matches unless noted):
 | `/agent` | Pick another loaded agent |
 | `/sessions` | List sessions |
 | `/new` | Fresh session id + reset context footer **and** checklist toolbar |
-| `/compact` | LLM-summarize the session transcript and **rewrite** the session file with the summary (`save_session(…, override=True)`) |
+| `/compact` | Summarize the session transcript into a structured summary (goal, done, open questions, key paths) and **rewrite** the session file with it (`save_session(…, override=True)`). Prints “Nothing to compact yet.” instead of calling the model when there's nothing worth summarizing (e.g. only the current, unanswered user turn) |
 
 Unknown `/…` commands print a dim “not a command” message.
 
@@ -106,6 +114,10 @@ Persistence details (disk sidecar, resume re-injection, sharing via `session_id`
 
 1. Resolve session id (new UUID, `--resume-id`, or picker via `--resume`)
 2. Load agent from `READY_AGENTS[args.agent]`
+   - If the resumed session's recorded agent (see `agent`/`preview` in
+     [agent-config](agent-config.md)) differs from `--agent`, print a yellow
+     warning and continue anyway — a mismatch is usually a forgotten
+     `--agent` flag, not an intentional switch (that's what `/agent` is for)
 3. Each user message calls `run_agent(…)` with:
    - `system_prompt` from agent config
    - tool registry from `tools` + `allowed_tools`
@@ -125,7 +137,10 @@ amon --headless TASK --agent NAME [--json] [--save-session]
 
 The `spawn_agents` tool is the other direction: it launches `amon --headless
 --json` children, capped and killable. Headless runs in-process so a child can
-never spawn a grandchild.
+never spawn a grandchild. With `AMON_STREAM` set, each child's stderr is
+forwarded live (not buffered until the whole batch finishes), and in the
+interactive terminal a `spawn_agents` result renders as a table (agent, ok,
+tokens, turns, session) instead of raw JSON when it parses cleanly.
 
 ### `--json` output
 
@@ -198,5 +213,10 @@ a hard-trim fallback on overflow — auto-compact keeps the on-disk session file
 complete (in-memory only). Interactive `/compact` is different: it rewrites the
 session file to the summary. Details: [agent-config](agent-config.md).
 
-Ctrl+C during an interactive `run_agent` hard-cancels the current run (no delayed
-receive of the in-flight LLM response). ESC is not a cancel key.
+Ctrl+C during an interactive run requests a **graceful stop**: the current step
+(in-flight LLM call or tool call) still finishes, then the partial run is
+persisted and returned as a normal, non-ok `AgentResult` (`error="Interrupted."`,
+same shape as hitting `max_turns`/`max_runtime_s`). A second Ctrl+C while still
+running hard-aborts immediately (`KeyboardInterrupt`, no delayed receive of the
+in-flight LLM response), same as the old single-press behavior. ESC is not a
+cancel key.

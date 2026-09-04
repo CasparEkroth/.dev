@@ -71,7 +71,7 @@ Globs supported via `glob(…, recursive=True)`.
 ## Runtime flow
 
 1. `catalog_for_agent(agent.allowed_skills)` builds `[{name, description, path}, …]`
-2. `build_system_prompt` appends an **Available Skills** section and instructs: first matching action must be `load_skill(skill_path=…)`
+2. `build_system_prompt` appends an **Available Skills** section and instructs: `load_skill(skill_path=…)` must be called before acting on a matching skill's instructions — not necessarily as the very first tool call of the turn (e.g. setting up a checklist first is fine)
 3. `load_skill` reads `SKILL.md` body + lists other files under the skill dir as `resources:`
 4. Model follows the loaded instructions (often running a script path from `resources:`)
 
