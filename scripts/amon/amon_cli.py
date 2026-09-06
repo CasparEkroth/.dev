@@ -32,6 +32,7 @@ from scripts.amon.memory import (
 from shared.llm_client import get_context_window
 
 from scripts.amon.tools.skills import catalog_for_agent
+from scripts.amon.tools.mcp import discover_mcp_tools
 
 
 def _init_context_limit() -> None:
@@ -236,6 +237,20 @@ def _run_agent_cancelable(**kwargs):
         signal.signal(signal.SIGINT, previous_handler)
 
 
+def _discover_agent_mcp_tools(agent) -> dict | None:
+    """Discover *agent*'s MCP-backed tools once (not per prompt).
+
+    The interactive loop is sync top-to-bottom; this is the same
+    `asyncio.run(...)` bridging idiom `registry.py`'s `_spawn_agents` already
+    uses, just for a different sync/async boundary. Returns None when the
+    agent has no `mcp_servers` configured, so callers can pass it straight
+    through as `get_registry`'s `extra_tools`.
+    """
+    if not agent.mcp_servers:
+        return None
+    return asyncio.run(discover_mcp_tools(agent.mcp_servers))
+
+
 def _run_interactive(args) -> None:
     session_id = _resolve_session_id(args)
     if session_id is None:
@@ -260,6 +275,8 @@ def _run_interactive(args) -> None:
         terminal.console.print(f"Error: {args.agent} is not a saved agent")
         return
 
+    mcp_tools = _discover_agent_mcp_tools(agent)
+
     while True:
         try:
             user_input = prompt_session.prompt("\n> ").strip()
@@ -281,6 +298,7 @@ def _run_interactive(args) -> None:
                 terminal.console.print(f"[dim]Current agent: {agent.name}")
                 continue
             agent = READY_AGENTS.get(t_agent)
+            mcp_tools = _discover_agent_mcp_tools(agent)
             continue
 
         if user_input == "/sessions":
@@ -340,6 +358,7 @@ def _run_interactive(args) -> None:
                         deny_paths=agent.deny_paths,
                         denied_commands=agent.denied_commands,
                         session_id=session_id,
+                        extra_tools=mcp_tools,
                     ),
                     skill_catalog=catalog_for_agent(agent.allowed_skills),
                     confirm_fn=terminal.confirm_tool,

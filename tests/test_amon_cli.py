@@ -28,6 +28,7 @@ def _fake_agent():
         model=None,
         system_prompt_template=None,
         max_tool_output_chars=None,
+        mcp_servers={},
     )
 
 

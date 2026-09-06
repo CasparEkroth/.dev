@@ -1645,3 +1645,78 @@ class TestMaxToolOutputChars:
         # Notice text can exceed the raw cap; the body must not be the full dump.
         assert tool_msg["content"] != "y" * 200
         assert tool_msg["content"].count("y") < 200
+
+
+class TestMcpDerivedEntryDispatchesLikeAnyOther:
+    """An entry from discover_mcp_tools() is structurally identical to a
+    native tool_registry entry — this proves the dispatch loop, confirmation,
+    and truncation need (and got) zero new code for MCP support: they're
+    already name-agnostic. See MCP_SUPPORT_PLAN.md Phase 4."""
+
+    def _mcp_entry(self, fn, requires_confirmation=False):
+        name = "mcp__myserver__echo"
+        return {
+            name: {
+                "schema": {
+                    "type": "function",
+                    "function": {"name": name, "parameters": {"type": "object"}},
+                },
+                "fn": fn,
+                "requires_confirmation": requires_confirmation,
+            }
+        }
+
+    def test_dispatches_and_returns_the_result(self):
+        called = []
+        responses = [
+            _response(
+                tool_calls=_tool_call(name="mcp__myserver__echo"),
+            ),
+            _response(content="done"),
+        ]
+        result, _ = _run(
+            responses,
+            registry=self._mcp_entry(lambda **kw: called.append(kw) or "HI"),
+        )
+        assert result.ok
+        assert called == [{"text": "hi"}]
+
+    def test_requires_confirmation_like_any_other_tool(self):
+        called = []
+        responses = [
+            _response(tool_calls=_tool_call(name="mcp__myserver__echo")),
+            _response(content="understood"),
+        ]
+        with patch("scripts.amon.agent_loop.call_llm_with_tools") as llm:
+            llm.side_effect = responses
+            run_agent(
+                system_prompt="sys",
+                user_input="task",
+                tool_registry=self._mcp_entry(
+                    lambda **kw: called.append(kw) or "ran",
+                    requires_confirmation=True,
+                ),
+                skill_catalog=[],
+                save_session_=False,
+                headless=False,
+                confirm_fn=lambda name, args: False,
+                stream_actions=lambda *a, **kw: None,
+            )
+        assert called == []
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "User denied permission to run tool 'mcp__myserver__echo'" in (
+            tool_msg["content"]
+        )
+
+    def test_oversized_result_is_truncated(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("scripts.amon.agent_loop.TOOL_OUTPUT_DIR", tmp_path)
+        monkeypatch.setattr("scripts.amon.agent_loop.MAX_TOOL_OUTPUT_CHARS", 50)
+        responses = [
+            _response(tool_calls=_tool_call(name="mcp__myserver__echo")),
+            _response(content="done"),
+        ]
+        _, llm = _run(responses, registry=self._mcp_entry(lambda **kw: "z" * 200))
+        conversation = llm.call_args_list[1].args[1]
+        tool_msg = next(m for m in conversation if m.get("role") == "tool")
+        assert "truncated" in tool_msg["content"]

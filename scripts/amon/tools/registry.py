@@ -438,6 +438,7 @@ def get_registry(
     deny_paths: list[str] | None = None,
     denied_commands: list[str] | None = None,
     session_id: object | None = None,
+    extra_tools: dict | None = None,
 ) -> dict:
     """Select this agent's tools, with its own confirmation and path policy.
 
@@ -448,6 +449,12 @@ def get_registry(
     bound onto the tool callables with ``functools.partial`` — they are never
     added to the JSON schema the model sees.
 
+    ``extra_tools``: per-run, already-built entries (e.g. from
+    ``discover_mcp_tools``) merged in ahead of everything below — a wildcard
+    agent (``"tools": ["*"]``) picks these up for free, and every guard/
+    confirmation/truncation rule below applies to them exactly like a native
+    tool, since they're structurally identical entries.
+
     ``["*"]`` in ``tools`` / ``allowed_tools`` expands to every registered
     tool name, resolved here rather than at agent-load time — this is the
     only point guaranteed to run after ``tool_registry`` is fully built
@@ -457,12 +464,15 @@ def get_registry(
     """
     if tools is None:
         return {}
+
+    registry = {**tool_registry, **(extra_tools or {})}
+
     if tools == ["*"]:
-        tools = list(tool_registry.keys())
+        tools = list(registry.keys())
 
     allowed = allowed_tools or []
     if allowed == ["*"]:
-        allowed = list(tool_registry.keys())
+        allowed = list(registry.keys())
     allow_paths = list(allow_paths or [])
     deny_paths = list(deny_paths or [])
     denied_commands = list(denied_commands or [])
@@ -474,7 +484,7 @@ def get_registry(
     cwd_state = {"cwd": load_session_cwd(session_id) if session_id else None}
 
     out: dict = {}
-    for k, v in tool_registry.items():
+    for k, v in registry.items():
         if k not in tools:
             continue
         entry = {**v, "requires_confirmation": k not in allowed}

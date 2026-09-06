@@ -59,6 +59,10 @@ SESSIONS_DIR = Path(
 #: Per-call default; callers may raise it for long jobs.
 DEFAULT_SHELL_TIMEOUT: int = 30
 
+#: Per-server default (connect + tools/list or tools/call + close), seconds.
+#: A server's own "timeout" config field overrides this.
+DEFAULT_MCP_TIMEOUT: float = 30.0
+
 DEFAULT_MAX_TURNS: int = 30
 
 #: Concurrent child processes spawn_agents will run.

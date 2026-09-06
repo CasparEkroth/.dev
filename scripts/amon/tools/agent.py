@@ -33,7 +33,10 @@ class Agent(BaseModel):
     system_prompt_template: str | None = None
     #: Per-agent ceiling for tool results; None keeps the global default.
     max_tool_output_chars: int | None = None
-    #: TODO: accepted and validated, but no server is started yet.
+    #: server_name -> {command, args, env, timeout, disabled, disabledTools}
+    #: (stdio) or {url, headers, timeout, disabled, disabledTools} (remote).
+    #: Discovered and merged into the tool registry per run — see
+    #: scripts/amon/tools/mcp.py:discover_mcp_tools.
     mcp_servers: dict[str, dict] = Field(default_factory=dict)
     #: Glob patterns of paths tools may touch. Empty = unrestricted (unless denied).
     allow_paths: list[str] = Field(default_factory=list)
@@ -108,6 +111,12 @@ class Agent(BaseModel):
 
             event_log = file_event_log
 
+        mcp_tools = None
+        if self.mcp_servers:
+            from scripts.amon.tools.mcp import discover_mcp_tools
+
+            mcp_tools = await discover_mcp_tools(self.mcp_servers)
+
         return await asyncio.to_thread(
             run_agent,
             system_prompt=self.system_prompt,
@@ -119,6 +128,7 @@ class Agent(BaseModel):
                 deny_paths=self.deny_paths,
                 denied_commands=self.denied_commands,
                 session_id=session_id,
+                extra_tools=mcp_tools,
             ),
             skill_catalog=catalog_for_agent(self.allowed_skills),
             headless=True,
