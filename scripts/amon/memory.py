@@ -91,6 +91,28 @@ def load_session_info(session_id: UUID, session_dir: Path = SESSIONS_DIR) -> dic
     return {"agent": meta.get("agent"), "preview": meta.get("preview")}
 
 
+def agent_mismatch_warning(
+    session_id: UUID, agent_name: str, session_dir: Path | None = None
+) -> str | None:
+    """Return a warning string when *agent_name* differs from the agent last
+    recorded on *session_id*, else ``None``.
+
+    Pure helper — callers (interactive REPL and headless ``run_jobs``) decide
+    how to surface it. Wording is shared so the two paths cannot drift.
+    ``session_dir`` defaults to the live ``SESSIONS_DIR`` at call time (not
+    import time) so tests can monkeypatch the module attribute.
+    """
+    session_agent = load_session_info(
+        session_id, SESSIONS_DIR if session_dir is None else session_dir
+    ).get("agent")
+    if session_agent and session_agent != agent_name:
+        return (
+            f"Warning: this session was last run with agent "
+            f"'{session_agent}', but you're resuming with '{agent_name}'."
+        )
+    return None
+
+
 def save_session_cwd(
     session_id: UUID, cwd: str, session_dir: Path = SESSIONS_DIR
 ) -> None:

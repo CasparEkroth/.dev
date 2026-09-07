@@ -76,6 +76,7 @@ Runtime directories (set **before** process start; bound at `config` import):
 |-----|---------|----------|
 | `AMON_SESSIONS_DIR` | `scripts/amon/config/sessions/` | Transcript `{uuid}`, meta `{uuid}.meta.json`, todos `{uuid}.todos.json` |
 | `AMON_TOOL_OUTPUT_DIR` | `scripts/amon/config/tool_output/` | Spill files for truncated tool output |
+| `AMON_CONFIG_ROOT` | unset | When set, load agents only from `<AMON_CONFIG_ROOT>/agents` (skip system/home/cwd merge) |
 
 Meta also carries `agent` and `preview` (recorded once, on a brand-new
 session) — shown alongside the session id in `/sessions` and the `--resume`
@@ -162,13 +163,20 @@ noise) and exits `0` on success / `1` on failure. Shape comes from `spawn_agents
   },
   "turns": 1,
   "tools_used": [],
-  "session_id": null
+  "session_id": null,
+  "agent_warning": null
 }
 ```
 
 `usage` fields are **full-run sums** across turns (not last-turn only).
 When `ok` is false (unknown agent, exception, max turns), check `error`; `result`
 may still hold partial content (especially on max-turns).
+
+`agent_warning` is present on successful `run_jobs` results: `null` when there
+is no resume-agent mismatch, or a warning string when `--session-id` points at
+a session last run under a different `--agent`. The same text is also printed
+to stderr (non-fatal). Absent from the `_failed` short-circuit path (unknown
+agent / exception before `run_task`).
 
 If multiple jobs were spawned, the payload is `{ "ok": <all ok>, "results": [ … ] }`.
 Without `--json`, the same data is rendered with `terminal.print_headless_result`.

@@ -3,7 +3,7 @@
 import argparse
 import signal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from scripts.amon import terminal
@@ -219,6 +219,12 @@ class TestResumeAgentAffinityWarning:
 
     def _run(self, agent_arg, session_agent):
         args = argparse.Namespace(agent=agent_arg)
+        warning = None
+        if session_agent and session_agent != agent_arg:
+            warning = (
+                f"Warning: this session was last run with agent "
+                f"'{session_agent}', but you're resuming with '{agent_arg}'."
+            )
         with (
             patch("scripts.amon.amon_cli.READY_AGENTS", {agent_arg: _fake_agent()}),
             patch(
@@ -228,8 +234,8 @@ class TestResumeAgentAffinityWarning:
             patch("scripts.amon.amon_cli.terminal.show_welcome"),
             patch("scripts.amon.amon_cli._resolve_session_id", return_value=uuid4()),
             patch(
-                "scripts.amon.amon_cli.load_session_info",
-                return_value={"agent": session_agent, "preview": "did a thing"},
+                "scripts.amon.amon_cli.agent_mismatch_warning",
+                return_value=warning,
             ),
             patch("scripts.amon.amon_cli.terminal.console.print") as console_print,
         ):
@@ -250,3 +256,63 @@ class TestResumeAgentAffinityWarning:
     def test_no_warning_for_a_session_with_no_recorded_agent(self):
         printed = self._run(agent_arg="dev", session_agent=None)
         assert not any("last run with agent" in line for line in printed)
+
+
+class TestInteractiveMcpCloserLifecycle:
+    """Persistent MCP closers must run on /agent switch (old first) and on exit."""
+
+    def test_agent_switch_closes_previous_before_discovering_next(self):
+        order = []
+        first_closer = MagicMock(side_effect=lambda: order.append("close-first"))
+        second_closer = MagicMock(side_effect=lambda: order.append("close-second"))
+
+        def discover(agent):
+            order.append(f"discover-{agent.name}")
+            if agent.name == "first":
+                return {}, [first_closer]
+            return {}, [second_closer]
+
+        first = _fake_agent()
+        first.name = "first"
+        second = _fake_agent()
+        second.name = "second"
+
+        class _SwitchThenExit:
+            def __init__(self):
+                self._n = 0
+
+            def prompt(self, *_a, **_k):
+                self._n += 1
+                if self._n == 1:
+                    return "/agent"
+                raise EOFError
+
+        args = argparse.Namespace(agent="first")
+        with (
+            patch(
+                "scripts.amon.amon_cli.READY_AGENTS",
+                {"first": first, "second": second},
+            ),
+            patch(
+                "scripts.amon.amon_cli.terminal.make_prompt_session",
+                return_value=_SwitchThenExit(),
+            ),
+            patch("scripts.amon.amon_cli.terminal.show_welcome"),
+            patch("scripts.amon.amon_cli._resolve_session_id", return_value=uuid4()),
+            patch("scripts.amon.amon_cli.agent_mismatch_warning", return_value=None),
+            patch(
+                "scripts.amon.amon_cli._discover_agent_mcp_tools",
+                side_effect=discover,
+            ),
+            patch("scripts.amon.amon_cli.terminal.pick_agents", return_value="second"),
+        ):
+            _run_interactive(args)
+
+        assert order == [
+            "discover-first",
+            "close-first",
+            "discover-second",
+            "close-second",
+        ]
+        first_closer.assert_called_once_with()
+        second_closer.assert_called_once_with()

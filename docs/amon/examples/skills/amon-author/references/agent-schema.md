@@ -4,13 +4,20 @@ Source model: `scripts/amon/tools/agent.py` → class `Agent`
 
 ## File locations
 
+By default, configs are **merged** from three roots (later wins on stem collision):
+
 | Priority (low → high) | Glob |
 |-----------------------|------|
 | 1 system | `/etc/.amon/agents/*.json` |
 | 2 user | `~/.amon/agents/*.json` |
 | 3 project | `$CWD/.amon/agents/*.json` |
 
-Map key = filename stem. Higher priority overwrites lower on conflict.
+Map key = filename stem. Higher priority overwrites lower on conflict. A
+project-local tree alone does **not** hide home/system agents.
+
+When `AMON_CONFIG_ROOT` is set, loading uses *only*
+`<AMON_CONFIG_ROOT>/agents` (system/home/cwd skipped) — hermetic isolation
+for CI/verify.
 
 ## Fields
 
@@ -56,9 +63,10 @@ server name; the value is one of:
 | `env` | stdio | Extra env vars for the child process. `${VAR_NAME}` expands against the *host* process env at connect time — never persisted back to disk, never logged |
 | `url` | remote (SSE) | Server endpoint (required for remote; mutually exclusive with `command`) |
 | `headers` | remote | Request headers, e.g. `{"Authorization": "Bearer ${MY_TOKEN}"}`. Same `${VAR}` expansion as `env` |
-| `timeout` | both | Seconds for one connect + `tools/list`/`tools/call` + close cycle. Default `DEFAULT_MCP_TIMEOUT` (30s, `config.py`) |
+| `timeout` | both | Seconds for one connect + `tools/list`/`tools/call` + close cycle (reconnect path), or per bridged call on a persistent connection. Default `DEFAULT_MCP_TIMEOUT` (30s, `config.py`) |
 | `disabled` | both | `true` skips connecting to this server entirely |
 | `disabledTools` | both | Tool names from this server to drop after discovery |
+| `persistent` | both | `true` keeps one connection alive for the run/session instead of reconnecting per call. Default `false`. Required for servers that hold state across calls (e.g. browser automation like `@playwright/mcp`) |
 | `oauth` / `oauthScopes` | remote | **Reserved, not yet implemented.** Accepted and ignored — v1 remote auth is `headers` only |
 
 Discovery runs once per agent load (not per prompt): `Agent.run_task()` awaits
@@ -72,11 +80,13 @@ skipped rather than failing the whole agent run; a bad per-tool call (`is_error`
 from the server) comes back as a normal `"Error: ..."` tool result, not a
 raised exception.
 
-Connection model is reconnect-per-call: no persistent background session, one
+**Default connection model is reconnect-per-call**: one
 connect/`initialize`/`tools/call`/close cycle per tool invocation. Simple and
 correct under `spawn_agents`' multi-process model; a chatty MCP tool (many
-calls per turn) pays a reconnect each time — see MCP_SUPPORT_PLAN.md §1.2 if
-that ever needs to change.
+calls per turn) pays a reconnect each time. Opt in to a persistent background
+session per server with `"persistent": true` — one connection for the headless
+run (or interactive agent session until `/agent` switch / exit). See
+MCP_SUPPORT_PLAN.md §1.2.
 
 Worked example — a local stdio server and a remote SSE server on one agent:
 

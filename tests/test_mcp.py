@@ -11,6 +11,7 @@ SDK during the Phase 0 spike — see MCP_SUPPORT_PLAN.md.
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,6 +24,7 @@ from scripts.amon.tools.mcp import (
     _expand_env,
     _expand_map,
     _flatten_content,
+    _PersistentMcpConnection,
     discover_mcp_tools,
 )
 
@@ -43,6 +45,7 @@ class _FakeSession:
         self.call_is_error = call_is_error
         self.delay = delay
         self.called_with = None
+        self.call_count = 0
 
     async def __aenter__(self):
         return self
@@ -61,6 +64,7 @@ class _FakeSession:
 
     async def call_tool(self, name, arguments):
         self.called_with = (name, arguments)
+        self.call_count += 1
         if self.delay:
             await asyncio.sleep(self.delay)
         return SimpleNamespace(content=self.call_content, is_error=self.call_is_error)
@@ -87,7 +91,10 @@ def _patch_session(session, transport_attr="stdio_client"):
 def test_discover_mcp_tools_normal_discovery():
     session = _FakeSession(tools=[_tool("echo", "Echoes text", {"type": "object"})])
     with _patch_session(session)[0], _patch_session(session)[1]:
-        discovered = asyncio.run(discover_mcp_tools({"srv": {"command": "irrelevant"}}))
+        discovered, closers = asyncio.run(
+            discover_mcp_tools({"srv": {"command": "irrelevant"}})
+        )
+    assert closers == []
     assert list(discovered.keys()) == ["mcp__srv__echo"]
     entry = discovered["mcp__srv__echo"]
     assert entry["schema"]["function"]["name"] == "mcp__srv__echo"
@@ -101,7 +108,9 @@ def test_discovered_tool_fn_round_trips_through_call_tool():
         tools=[_tool("echo")], call_content=[SimpleNamespace(type="text", text="HI")]
     )
     with _patch_session(session)[0], _patch_session(session)[1]:
-        discovered = asyncio.run(discover_mcp_tools({"srv": {"command": "x"}}))
+        discovered, _closers = asyncio.run(
+            discover_mcp_tools({"srv": {"command": "x"}})
+        )
         # Real dispatch (agent_loop.py) calls fn(**args) synchronously, never
         # from inside a running event loop — assert outside asyncio.run too.
         result = discovered["mcp__srv__echo"]["fn"](text="hi there")
@@ -112,7 +121,7 @@ def test_discovered_tool_fn_round_trips_through_call_tool():
 def test_disabled_tools_are_filtered_out():
     session = _FakeSession(tools=[_tool("a"), _tool("b")])
     with _patch_session(session)[0], _patch_session(session)[1]:
-        discovered = asyncio.run(
+        discovered, _ = asyncio.run(
             discover_mcp_tools({"srv": {"command": "x", "disabledTools": ["b"]}})
         )
     assert list(discovered.keys()) == ["mcp__srv__a"]
@@ -120,20 +129,22 @@ def test_disabled_tools_are_filtered_out():
 
 def test_disabled_server_is_never_connected_to():
     with patch.object(mcp_module, "stdio_client") as stdio_client_mock:
-        discovered = asyncio.run(
+        discovered, closers = asyncio.run(
             discover_mcp_tools({"srv": {"command": "x", "disabled": True}})
         )
     assert discovered == {}
+    assert closers == []
     stdio_client_mock.assert_not_called()
 
 
 def test_unreachable_server_is_skipped_with_a_warning(caplog):
     with patch.object(mcp_module, "stdio_client", _failing_transport):
         with caplog.at_level("WARNING"):
-            discovered = asyncio.run(
+            discovered, closers = asyncio.run(
                 discover_mcp_tools({"broken": {"command": "/no/such/binary"}})
             )
     assert discovered == {}
+    assert closers == []
     assert any("broken" in r.getMessage() for r in caplog.records)
 
 
@@ -148,7 +159,7 @@ def test_one_broken_server_does_not_block_a_working_one():
         patch.object(mcp_module, "sse_client", lambda *a, **kw: _fake_transport()),
         patch.object(mcp_module, "ClientSession", _client_session_factory),
     ):
-        discovered = asyncio.run(
+        discovered, _ = asyncio.run(
             discover_mcp_tools(
                 {
                     "broken": {"command": "/no/such/binary"},
@@ -162,7 +173,7 @@ def test_one_broken_server_does_not_block_a_working_one():
 def test_discovery_timeout_is_skipped_like_any_other_failure():
     slow = _FakeSession(tools=[_tool("slow")], delay=0.2)
     with _patch_session(slow)[0], _patch_session(slow)[1]:
-        discovered = asyncio.run(
+        discovered, _ = asyncio.run(
             discover_mcp_tools({"srv": {"command": "x", "timeout": 0.01}})
         )
     assert discovered == {}
@@ -245,6 +256,122 @@ def test_call_tool_raises_when_config_has_neither_command_nor_url():
 
 def test_discover_skips_a_malformed_server_config_instead_of_raising(caplog):
     with caplog.at_level("WARNING"):
-        discovered = asyncio.run(discover_mcp_tools({"bad": {}}))
+        discovered, closers = asyncio.run(discover_mcp_tools({"bad": {}}))
     assert discovered == {}
+    assert closers == []
     assert any("bad" in r.getMessage() for r in caplog.records)
+
+
+def test_non_persistent_reconnects_per_call():
+    """Default path: transport entered once per tools/call (not once for the run)."""
+    session = _FakeSession(
+        tools=[_tool("echo")], call_content=[SimpleNamespace(type="text", text="ok")]
+    )
+    enter_count = {"n": 0}
+
+    @asynccontextmanager
+    async def counting_transport(*args, **kwargs):
+        enter_count["n"] += 1
+        yield (None, None)
+
+    with (
+        patch.object(mcp_module, "stdio_client", counting_transport),
+        patch.object(mcp_module, "ClientSession", lambda r, w: session),
+    ):
+        discovered, closers = asyncio.run(discover_mcp_tools({"srv": {"command": "x"}}))
+        # discovery itself entered once
+        discovery_enters = enter_count["n"]
+        discovered["mcp__srv__echo"]["fn"]()
+        discovered["mcp__srv__echo"]["fn"]()
+
+    assert closers == []
+    # one enter for list_tools + one per call_tool
+    assert enter_count["n"] == discovery_enters + 2
+
+
+def test_persistent_connection_reuses_one_transport_across_calls():
+    """persistent: true must enter the transport exactly once for list+N calls."""
+    session = _FakeSession(
+        tools=[_tool("echo")], call_content=[SimpleNamespace(type="text", text="ok")]
+    )
+    enter_count = {"n": 0}
+
+    @asynccontextmanager
+    async def counting_transport(*args, **kwargs):
+        enter_count["n"] += 1
+        yield (None, None)
+
+    with (
+        patch.object(mcp_module, "stdio_client", counting_transport),
+        patch.object(mcp_module, "ClientSession", lambda r, w: session),
+    ):
+        discovered, closers = asyncio.run(
+            discover_mcp_tools({"srv": {"command": "x", "persistent": True}})
+        )
+        assert len(closers) == 1
+        assert enter_count["n"] == 1  # connect once for list_tools
+        assert discovered["mcp__srv__echo"]["fn"]() == "ok"
+        assert discovered["mcp__srv__echo"]["fn"]() == "ok"
+        assert enter_count["n"] == 1  # still one after two calls
+        assert session.call_count == 2
+        closers[0]()
+
+
+def test_persistent_connection_close_stops_background_thread():
+    session = _FakeSession(tools=[_tool("echo")])
+
+    with (
+        patch.object(mcp_module, "stdio_client", _fake_transport),
+        patch.object(mcp_module, "ClientSession", lambda r, w: session),
+    ):
+        conn = _PersistentMcpConnection({"command": "x"})
+        conn.connect()
+        assert conn._thread.is_alive()
+        conn.close()
+
+    # join(timeout=5) already ran inside close; give a tiny grace for the
+    # OS to mark the thread dead so a flake becomes a clear failure.
+    deadline = time.time() + 2
+    while conn._thread.is_alive() and time.time() < deadline:
+        time.sleep(0.01)
+    assert not conn._thread.is_alive()
+
+
+def test_persistent_connection_close_does_not_raise_on_transport_teardown_error(caplog):
+    """Real anyio transports (stdio_client) tie cancel scopes to the asyncio
+    Task that opened them; connect()/close() each run on a fresh Task via
+    run_coroutine_threadsafe, so the transport's __aexit__ reliably raises on
+    close in production. close() must log and swallow this, not raise —
+    Agent.run_task()'s finally block has no try/except around closer(), so a
+    raise here would mask an otherwise-successful run."""
+
+    @asynccontextmanager
+    async def close_raising_transport(*args, **kwargs):
+        yield (None, None)
+        raise RuntimeError("cancel scope in a different task")
+
+    session = _FakeSession(tools=[_tool("echo")])
+    with (
+        patch.object(mcp_module, "stdio_client", close_raising_transport),
+        patch.object(mcp_module, "ClientSession", lambda r, w: session),
+    ):
+        conn = _PersistentMcpConnection({"command": "x"})
+        conn.connect()
+        with caplog.at_level("WARNING"):
+            conn.close()  # must not raise
+
+    assert any("closing persistent" in r.getMessage().lower() for r in caplog.records)
+    assert not conn._thread.is_alive()
+
+
+def test_persistent_discovery_failure_is_skipped_like_non_persistent(caplog):
+    with patch.object(mcp_module, "stdio_client", _failing_transport):
+        with caplog.at_level("WARNING"):
+            discovered, closers = asyncio.run(
+                discover_mcp_tools(
+                    {"broken": {"command": "/no/such", "persistent": True}}
+                )
+            )
+    assert discovered == {}
+    assert closers == []
+    assert any("broken" in r.getMessage() for r in caplog.records)

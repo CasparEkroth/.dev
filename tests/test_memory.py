@@ -14,6 +14,7 @@ from scripts.amon.memory import (
     load_context_tokens,
     save_session_info,
     load_session_info,
+    agent_mismatch_warning,
     save_session_cwd,
     load_session_cwd,
     append_event,
@@ -178,6 +179,21 @@ class TestMemoryFunctions(unittest.TestCase):
         append_event(self.session_id, {"event": "turn"}, self.temp_dir)
         remove_session(self.session_id, self.temp_dir)
         self.assertFalse((self.temp_dir / f"{self.session_id}.events.jsonl").exists())
+
+    def test_agent_mismatch_warning_none_when_matching(self):
+        save_session_info(self.session_id, self.temp_dir, agent="dev", preview="x")
+        self.assertIsNone(agent_mismatch_warning(self.session_id, "dev", self.temp_dir))
+
+    def test_agent_mismatch_warning_string_when_differ(self):
+        save_session_info(self.session_id, self.temp_dir, agent="writer", preview="x")
+        msg = agent_mismatch_warning(self.session_id, "default", self.temp_dir)
+        self.assertIsNotNone(msg)
+        self.assertIn("writer", msg)
+        self.assertIn("default", msg)
+        self.assertTrue(msg.startswith("Warning:"))
+
+    def test_agent_mismatch_warning_none_when_no_recorded_agent(self):
+        self.assertIsNone(agent_mismatch_warning(self.session_id, "dev", self.temp_dir))
 
 
 if __name__ == "__main__":

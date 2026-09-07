@@ -75,5 +75,10 @@ TOOL_OUTPUT_DIR = Path(
     os.environ.get("AMON_TOOL_OUTPUT_DIR", str(BASE_CONFIG_DIR / "tool_output"))
 )
 
+#: When set, agent loading uses *only* `<AMON_CONFIG_ROOT>/agents` and skips
+#: the normal system/home/cwd merge. Opt-in hermetic isolation for CI/verify
+#: scratch trees — unset keeps today's merge-with-override behavior.
+AMON_CONFIG_ROOT: str | None = os.environ.get("AMON_CONFIG_ROOT")
+
 #: Prompt size at which a run summarizes its own history.
 COMPACT_AT_TOKENS: int = int(BASE_CONTEXT_WINDOW * 0.75)

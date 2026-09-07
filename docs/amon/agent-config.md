@@ -4,13 +4,20 @@ Agents are JSON files loaded at startup into `READY_AGENTS`.
 
 ## Load order
 
-Later directories **override** same-named agents (same stem):
+By default, agent JSONs are **merged** from three roots; later directories
+**override** same-named agents (same stem):
 
 1. `/etc/.amon/agents/*.json`  (system)
 2. `~/.amon/agents/*.json`     (user)
 3. `$CWD/.amon/agents/*.json`  (project-local)
 
 The map key is the **filename stem** (`default.json` → `--agent default`).
+A project-local tree alone does **not** hide home/system agents — it only
+adds or overrides by stem.
+
+Set `AMON_CONFIG_ROOT` (before process start) to load *only*
+`<AMON_CONFIG_ROOT>/agents` and skip the system/home/cwd merge entirely —
+useful for hermetic CI / verify scratch trees.
 
 Invalid JSON / validation errors are skipped with a warning.
 
@@ -61,7 +68,7 @@ Full field reference: [amon-author reference](examples/skills/amon-author/refere
 | `model` | no | Model id for this agent (default: `settings.LLM_MODEL`). Headless/`spawn_agents` can override per run via `--model` / job `model` |
 | `system_prompt_template` | no | Overrides how the system prompt is assembled. Placeholders: `{prompt}` (this agent's `system_prompt`), `{workspace}` (cwd), `{skills}` (the catalog). Unused placeholders are fine; literal braces must be doubled, and an unknown placeholder raises at run start. Supply a template without the `load_skill` sentence to drop the skill mandate — e.g. when the agent's first tool call must be something else |
 | `max_tool_output_chars` | no | Per-agent ceiling for tool-result truncation/spill. Default `null` uses global `MAX_TOOL_OUTPUT_CHARS` (20_000) |
-| `mcp_servers` | no | `server_name` → `{command, args, env, timeout, disabled, disabledTools}` (stdio) or `{url, headers, timeout, disabled, disabledTools}` (remote). Discovered per run and merged into the tool registry as `mcp__{server_name}__{tool_name}`. `oauth`/`oauthScopes` accepted but not yet implemented — v1 remote auth is `headers` only. Full reference: [amon-author reference](examples/skills/amon-author/references/agent-schema.md#mcp_servers) |
+| `mcp_servers` | no | `server_name` → `{command, args, env, timeout, disabled, disabledTools, persistent}` (stdio) or `{url, headers, timeout, disabled, disabledTools, persistent}` (remote). Discovered per run and merged into the tool registry as `mcp__{server_name}__{tool_name}`. Default reconnect-per-call; set `persistent: true` to keep one connection alive for the run/session (required for session-stateful servers like `@playwright/mcp`). `oauth`/`oauthScopes` accepted but not yet implemented — v1 remote auth is `headers` only. Full reference: [amon-author reference](examples/skills/amon-author/references/agent-schema.md#mcp_servers) |
 | `allow_paths` | no | Glob patterns of paths tools may touch. Empty (default) = unrestricted unless denied. Matched after `~` expansion and symlink/`..` resolution |
 | `deny_paths` | no | Glob patterns of paths tools must not touch. Empty (default) = nothing denied. **Deny always wins over allow** |
 | `denied_commands` | no | Literal command names blocked for `shell` / `shell_readonly` (checked in command position, including after `&&`/`;`/`|` in shell strings). Empty (default) = no extra restriction |
