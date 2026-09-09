@@ -52,6 +52,56 @@ EOF
 
 echo "Created $HOME/.amon/agents/dev.json"
 
+if ! command -v npx >/dev/null 2>&1; then
+    echo "npx not found — install Node.js (https://nodejs.org) to use npx-based MCP servers."
+    echo "therefor skipping creating web-crawler"
+else
+    cat > "$HOME/.amon/agents/web-crawler.json" << 'EOF'
+{
+  "name": "web-crawler",
+  "description": "Searches and browses the public web via Playwright browser automation to find, read, and summarize real information. Cannot touch the local filesystem or shell.",
+  "system_prompt": "NEVER use phrases like 'I'll', 'Let me', 'I will', or 'I'm going to' before taking an action. Do not narrate — just call the tool immediately.\n\nYou are a web research agent. You have a real, persistent browser via Playwright tools — you do not have filesystem or shell access, only the browser.\n\nCRITICAL RULES:\n1. NEVER answer from memory or guess a fact you can verify by browsing. Always navigate and read the real page.\n2. To search, navigate to `https://duckduckgo.com/html/?q=<url-encoded query>` (plain HTML results, no JS search box needed) or `https://www.bing.com/search?q=<url-encoded query>` if DuckDuckGo's results are unhelpful.\n3. After every navigation, call browser_snapshot to read the page's structure before deciding what to click or extract — don't guess at page content.\n4. Open promising result links in the same tab (browser_navigate) or a new one (browser_tabs) to read the actual source before trusting a search snippet.\n5. For any request with more than one distinct step (e.g. multiple sub-questions, multiple sources to check), call todo_write with the full checklist before your first other tool call, and update it as you go.\n6. When you give your final answer, cite the URL(s) you actually read.\n7. If a page needs a login, paywall, or CAPTCHA, don't try to bypass it — note that it was unreachable and move to another source.\n\nYou are proactive, precise, and evidence-driven — every claim should trace back to a page you actually opened.",
+  "tools": [
+    "todo_write",
+    "mcp__playwright__browser_navigate",
+    "mcp__playwright__browser_navigate_back",
+    "mcp__playwright__browser_snapshot",
+    "mcp__playwright__browser_click",
+    "mcp__playwright__browser_type",
+    "mcp__playwright__browser_press_key",
+    "mcp__playwright__browser_find",
+    "mcp__playwright__browser_wait_for",
+    "mcp__playwright__browser_tabs",
+    "mcp__playwright__browser_take_screenshot",
+    "mcp__playwright__browser_close"
+  ],
+  "allowed_tools": [
+    "todo_write",
+    "mcp__playwright__browser_navigate",
+    "mcp__playwright__browser_navigate_back",
+    "mcp__playwright__browser_snapshot",
+    "mcp__playwright__browser_click",
+    "mcp__playwright__browser_type",
+    "mcp__playwright__browser_press_key",
+    "mcp__playwright__browser_find",
+    "mcp__playwright__browser_wait_for",
+    "mcp__playwright__browser_tabs",
+    "mcp__playwright__browser_take_screenshot",
+    "mcp__playwright__browser_close"
+  ],
+  "mcp_servers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--headless"],
+      "persistent": true
+    }
+  },
+  "max_turns": 40,
+  "max_runtime_s": 600
+}
+EOF
+    echo "Created $HOME/.amon/agents/web-crawler.json"
+fi
 
 # adding skills
 mkdir -p "$HOME/.amon/skills/python-validate"

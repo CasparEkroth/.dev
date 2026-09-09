@@ -222,3 +222,4 @@ sessions/
 tool_output/
 .amon
 .claude
+.playwright-mcp/
