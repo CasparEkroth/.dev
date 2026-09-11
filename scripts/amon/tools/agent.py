@@ -4,7 +4,12 @@ import logging
 import os
 import sys
 from pathlib import Path
-from config import DEFAULT_MAX_PARALLEL, DEFAULT_MAX_TURNS, REPO_DIR
+from config import (
+    AMON_CONFIG_ROOT,
+    DEFAULT_MAX_PARALLEL,
+    DEFAULT_MAX_TURNS,
+    REPO_DIR,
+)
 from scripts.amon.agent_loop import AgentResult, run_agent
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing import Any
@@ -33,7 +38,10 @@ class Agent(BaseModel):
     system_prompt_template: str | None = None
     #: Per-agent ceiling for tool results; None keeps the global default.
     max_tool_output_chars: int | None = None
-    #: TODO: accepted and validated, but no server is started yet.
+    #: server_name -> {command, args, env, timeout, disabled, disabledTools}
+    #: (stdio) or {url, headers, timeout, disabled, disabledTools} (remote).
+    #: Discovered and merged into the tool registry per run — see
+    #: scripts/amon/tools/mcp.py:discover_mcp_tools.
     mcp_servers: dict[str, dict] = Field(default_factory=dict)
     #: Glob patterns of paths tools may touch. Empty = unrestricted (unless denied).
     allow_paths: list[str] = Field(default_factory=list)
@@ -108,43 +116,60 @@ class Agent(BaseModel):
 
             event_log = file_event_log
 
-        return await asyncio.to_thread(
-            run_agent,
-            system_prompt=self.system_prompt,
-            user_input=task,
-            tool_registry=get_registry(
-                tools=self.tools,
-                allowed_tools=self.allowed_tools,
-                allow_paths=self.allow_paths,
-                deny_paths=self.deny_paths,
-                denied_commands=self.denied_commands,
+        mcp_tools = None
+        mcp_closers: list = []
+        if self.mcp_servers:
+            from scripts.amon.tools.mcp import discover_mcp_tools
+
+            mcp_tools, mcp_closers = await discover_mcp_tools(self.mcp_servers)
+
+        try:
+            return await asyncio.to_thread(
+                run_agent,
+                system_prompt=self.system_prompt,
+                user_input=task,
+                tool_registry=get_registry(
+                    tools=self.tools,
+                    allowed_tools=self.allowed_tools,
+                    allow_paths=self.allow_paths,
+                    deny_paths=self.deny_paths,
+                    denied_commands=self.denied_commands,
+                    session_id=session_id,
+                    extra_tools=mcp_tools,
+                ),
+                skill_catalog=catalog_for_agent(self.allowed_skills),
+                headless=True,
+                save_session_=save_session,
                 session_id=session_id,
-            ),
-            skill_catalog=catalog_for_agent(self.allowed_skills),
-            headless=True,
-            save_session_=save_session,
-            session_id=session_id,
-            max_turns=max_turns or self.max_turns,
-            hooks=self.hooks,
-            force_first_tool=self.force_first_tool,
-            max_runtime_s=self.max_runtime_s,
-            model=model or self.model,
-            system_prompt_template=self.system_prompt_template,
-            stream_actions=stream_actions,
-            max_tool_output_chars=self.max_tool_output_chars,
-            agent_name=self.name,
-            event_log=event_log,
-        )
+                max_turns=max_turns or self.max_turns,
+                hooks=self.hooks,
+                force_first_tool=self.force_first_tool,
+                max_runtime_s=self.max_runtime_s,
+                model=model or self.model,
+                system_prompt_template=self.system_prompt_template,
+                stream_actions=stream_actions,
+                max_tool_output_chars=self.max_tool_output_chars,
+                agent_name=self.name,
+                event_log=event_log,
+            )
+        finally:
+            for closer in mcp_closers:
+                closer()
 
 
 def load_ready_agents() -> dict[str, Agent]:
     agents: dict[str, Agent] = {}
 
-    system_path = Path("/etc/.amon/agents")
-    home_path = Path.home() / ".amon/agents"
-    cwd_path = Path.cwd() / ".amon/agents"
+    if AMON_CONFIG_ROOT:
+        # Hermetic: only the explicit root — skip system/home/cwd merge.
+        roots = (Path(AMON_CONFIG_ROOT) / "agents",)
+    else:
+        system_path = Path("/etc/.amon/agents")
+        home_path = Path.home() / ".amon/agents"
+        cwd_path = Path.cwd() / ".amon/agents"
+        roots = (system_path, home_path, cwd_path)
 
-    for path in (system_path, home_path, cwd_path):
+    for path in roots:
         if path.is_dir():
             for f in path.glob("*.json"):
                 try:
@@ -185,11 +210,18 @@ async def run_jobs(jobs: list[dict]) -> list[dict]:
     from scripts.amon.tools.registry import READY_AGENTS
 
     async def run_one(job: dict) -> dict:
+        from scripts.amon.memory import agent_mismatch_warning
+
         agent_name = job.get("agent", "")
         task = job.get("task", "")
         try:
             if agent_name not in READY_AGENTS:
                 return _failed(agent_name, task, f"Unknown agent: {agent_name}")
+            warning = None
+            if job.get("session_id") is not None:
+                warning = agent_mismatch_warning(job["session_id"], agent_name)
+                if warning:
+                    print(warning, file=sys.stderr)
             # Default False: match CLI headless (opt-in via --save-session / job flag).
             result = await READY_AGENTS[agent_name].run_task(
                 task=task,
@@ -198,7 +230,12 @@ async def run_jobs(jobs: list[dict]) -> list[dict]:
                 model=job.get("model"),
                 max_turns=job.get("max_turns"),
             )
-            return {**result.to_dict(), "agent": agent_name, "task": task}
+            return {
+                **result.to_dict(),
+                "agent": agent_name,
+                "task": task,
+                "agent_warning": warning,
+            }
         except Exception as e:
             logger.exception("job failed for %s", agent_name)
             return _failed(agent_name, task, str(e))

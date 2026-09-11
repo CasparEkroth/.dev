@@ -1,6 +1,6 @@
 import asyncio
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 from scripts.amon.agent_loop import AgentResult
 from scripts.amon.tools.agent import (
@@ -222,8 +222,271 @@ def test_run_task_forwards_new_fields():
     assert kwargs["max_tool_output_chars"] == 50_000
     assert kwargs["stream_actions"] is None
     assert kwargs["agent_name"] == "a"
-    # mcp_servers is a stub: accepted on the config, not yet wired into a run.
+    # mcp_servers is discovered and merged into tool_registry (get_registry's
+    # extra_tools), not forwarded to run_agent as its own kwarg.
     assert "mcp_servers" not in kwargs
+
+
+def test_run_task_merges_discovered_mcp_tools_into_the_registry():
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=["*"],
+        allowed_tools=["*"],
+        mcp_servers={"git": {"command": "mcp-server-git"}},
+    )
+    fake_entry = {
+        "schema": {
+            "type": "function",
+            "function": {"name": "mcp__git__status", "parameters": {}},
+        },
+        "fn": lambda **kw: "clean",
+        "requires_confirmation": True,
+    }
+
+    with (
+        patch(
+            "scripts.amon.tools.mcp.discover_mcp_tools", new_callable=AsyncMock
+        ) as discover,
+        patch("scripts.amon.tools.agent.run_agent") as run,
+    ):
+        discover.return_value = ({"mcp__git__status": fake_entry}, [])
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+
+    discover.assert_called_once_with({"git": {"command": "mcp-server-git"}})
+    registry = run.call_args.kwargs["tool_registry"]
+    assert "mcp__git__status" in registry
+    # allowed_tools=["*"] covers discovered tools too, same as native ones.
+    assert registry["mcp__git__status"]["requires_confirmation"] is False
+
+
+def test_run_task_closes_persistent_mcp_connections_after_run():
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=[],
+        allowed_tools=[],
+        mcp_servers={"pw": {"command": "x", "persistent": True}},
+    )
+    closer = MagicMock()
+
+    with (
+        patch(
+            "scripts.amon.tools.mcp.discover_mcp_tools", new_callable=AsyncMock
+        ) as discover,
+        patch("scripts.amon.tools.agent.run_agent") as run,
+    ):
+        discover.return_value = ({}, [closer])
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+
+    closer.assert_called_once_with()
+
+
+def test_run_task_closes_persistent_mcp_connections_on_run_agent_error():
+    agent = Agent(
+        name="a",
+        description="d",
+        system_prompt="s",
+        tools=[],
+        allowed_tools=[],
+        mcp_servers={"pw": {"command": "x", "persistent": True}},
+    )
+    closer = MagicMock()
+
+    with (
+        patch(
+            "scripts.amon.tools.mcp.discover_mcp_tools", new_callable=AsyncMock
+        ) as discover,
+        patch("scripts.amon.tools.agent.run_agent", side_effect=RuntimeError("boom")),
+    ):
+        discover.return_value = ({}, [closer])
+        import pytest
+
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(agent.run_task("task"))
+
+    closer.assert_called_once_with()
+
+
+def test_load_ready_agents_config_root_isolates_from_home(tmp_path, monkeypatch):
+    """AMON_CONFIG_ROOT skips system/home/cwd and loads only that root."""
+    from pathlib import Path
+
+    isolated = tmp_path / "scratch" / ".amon"
+    agents_dir = isolated / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "writer.json").write_text(
+        json.dumps(
+            {
+                "name": "writer",
+                "description": "scratch only",
+                "system_prompt": "hi",
+                "tools": [],
+                "allowed_tools": [],
+            }
+        )
+    )
+
+    home = tmp_path / "fake-home"
+    home_agents = home / ".amon" / "agents"
+    home_agents.mkdir(parents=True)
+    (home_agents / "dev.json").write_text(
+        json.dumps(
+            {
+                "name": "dev",
+                "description": "from home",
+                "system_prompt": "hi",
+                "tools": [],
+                "allowed_tools": [],
+            }
+        )
+    )
+
+    monkeypatch.setattr("scripts.amon.tools.agent.AMON_CONFIG_ROOT", str(isolated))
+    # Even if home would resolve, CONFIG_ROOT must ignore it.
+    with patch("scripts.amon.tools.agent.Path") as path_cls:
+        real_path = Path
+
+        def ctor(arg=None):
+            if arg is None:
+                return real_path()
+            return real_path(arg)
+
+        path_cls.side_effect = ctor
+        path_cls.home.return_value = home
+        path_cls.cwd.return_value = tmp_path
+        agents = load_ready_agents()
+
+    assert set(agents) == {"writer"}
+    assert "dev" not in agents
+
+
+def test_load_ready_agents_merge_when_config_root_unset(tmp_path, monkeypatch):
+    """Unset AMON_CONFIG_ROOT keeps merge-with-override (cwd wins on collision)."""
+    from pathlib import Path
+
+    monkeypatch.setattr("scripts.amon.tools.agent.AMON_CONFIG_ROOT", None)
+
+    home = tmp_path / "fake-home"
+    home_agents = home / ".amon" / "agents"
+    home_agents.mkdir(parents=True)
+    (home_agents / "dev.json").write_text(
+        json.dumps(
+            {
+                "name": "dev",
+                "description": "home dev",
+                "system_prompt": "hi",
+                "tools": [],
+                "allowed_tools": [],
+            }
+        )
+    )
+    (home_agents / "default.json").write_text(
+        json.dumps(
+            {
+                "name": "default",
+                "description": "home default",
+                "system_prompt": "home",
+                "tools": [],
+                "allowed_tools": [],
+            }
+        )
+    )
+
+    cwd_agents = tmp_path / ".amon" / "agents"
+    cwd_agents.mkdir(parents=True)
+    (cwd_agents / "default.json").write_text(
+        json.dumps(
+            {
+                "name": "default",
+                "description": "cwd default",
+                "system_prompt": "cwd",
+                "tools": [],
+                "allowed_tools": [],
+            }
+        )
+    )
+    (cwd_agents / "writer.json").write_text(
+        json.dumps(
+            {
+                "name": "writer",
+                "description": "cwd only",
+                "system_prompt": "hi",
+                "tools": [],
+                "allowed_tools": [],
+            }
+        )
+    )
+
+    missing = tmp_path / "missing-agents"
+    with patch("scripts.amon.tools.agent.Path") as path_cls:
+        real_path = Path
+
+        def ctor(arg=None):
+            if arg is None:
+                return real_path()
+            if arg == "/etc/.amon/agents":
+                return missing
+            return real_path(arg)
+
+        path_cls.side_effect = ctor
+        path_cls.home.return_value = home
+        path_cls.cwd.return_value = tmp_path
+        agents = load_ready_agents()
+
+    assert set(agents) == {"dev", "default", "writer"}
+    assert agents["default"].description == "cwd default"
+    assert agents["dev"].description == "home dev"
+
+
+def test_run_jobs_surfaces_agent_mismatch_warning(tmp_path, monkeypatch):
+    from uuid import uuid4
+
+    from scripts.amon.memory import save_session_info
+    from scripts.amon.tools.registry import READY_AGENTS
+
+    sid = uuid4()
+    save_session_info(sid, tmp_path, agent="writer", preview="wrote stuff")
+    monkeypatch.setattr("scripts.amon.memory.SESSIONS_DIR", tmp_path)
+
+    async def async_run_task(task: str, save_session: bool = True, **kwargs):
+        return AgentResult(ok=True, result="ok")
+
+    mock_agent = MagicMock()
+    mock_agent.run_task = async_run_task
+    with patch.dict(READY_AGENTS, {"default": mock_agent}, clear=True):
+        results = asyncio.run(
+            run_jobs(
+                [
+                    {
+                        "agent": "default",
+                        "task": "t",
+                        "session_id": sid,
+                    }
+                ]
+            )
+        )
+    assert results[0]["ok"] is True
+    assert results[0]["agent_warning"] is not None
+    assert "writer" in results[0]["agent_warning"]
+    assert "default" in results[0]["agent_warning"]
+
+
+def test_run_task_skips_discovery_when_no_mcp_servers_configured():
+    agent = Agent(
+        name="a", description="d", system_prompt="s", tools=[], allowed_tools=[]
+    )
+    with (
+        patch("scripts.amon.tools.mcp.discover_mcp_tools") as discover,
+        patch("scripts.amon.tools.agent.run_agent") as run,
+    ):
+        run.return_value = AgentResult(ok=True, result="done")
+        asyncio.run(agent.run_task("task"))
+    discover.assert_not_called()
 
 
 def test_run_task_streams_when_amon_stream_set(monkeypatch):

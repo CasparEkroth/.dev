@@ -11,12 +11,16 @@
 | User hooks (conventional) | `~/.amon/hooks/*` |
 | Project skills/hooks | any path referenced by config / `skill://` |
 
+Agents are **merged** from system → user → project (later overrides same stem).
+A project tree alone does not hide home/system agents.
+
 ## Runtime data dirs (overridable)
 
 | Kind | Config symbol | Env override | Default |
 |------|---------------|--------------|---------|
 | Sessions | `config.SESSIONS_DIR` | `AMON_SESSIONS_DIR` | `scripts/amon/config/sessions/` |
 | Tool output spill | `config.TOOL_OUTPUT_DIR` | `AMON_TOOL_OUTPUT_DIR` | `scripts/amon/config/tool_output/` |
+| Agent config root (hermetic) | `config.AMON_CONFIG_ROOT` | `AMON_CONFIG_ROOT` | unset (use the three-root merge above). When set, loads *only* `<AMON_CONFIG_ROOT>/agents` |
 
 Set env vars **before** process start (defaults are bound at import time).
 

@@ -59,6 +59,10 @@ SESSIONS_DIR = Path(
 #: Per-call default; callers may raise it for long jobs.
 DEFAULT_SHELL_TIMEOUT: int = 30
 
+#: Per-server default (connect + tools/list or tools/call + close), seconds.
+#: A server's own "timeout" config field overrides this.
+DEFAULT_MCP_TIMEOUT: float = 30.0
+
 DEFAULT_MAX_TURNS: int = 30
 
 #: Concurrent child processes spawn_agents will run.
@@ -70,6 +74,11 @@ MAX_TOOL_OUTPUT_CHARS: int = 20_000
 TOOL_OUTPUT_DIR = Path(
     os.environ.get("AMON_TOOL_OUTPUT_DIR", str(BASE_CONFIG_DIR / "tool_output"))
 )
+
+#: When set, agent loading uses *only* `<AMON_CONFIG_ROOT>/agents` and skips
+#: the normal system/home/cwd merge. Opt-in hermetic isolation for CI/verify
+#: scratch trees — unset keeps today's merge-with-override behavior.
+AMON_CONFIG_ROOT: str | None = os.environ.get("AMON_CONFIG_ROOT")
 
 #: Prompt size at which a run summarizes its own history.
 COMPACT_AT_TOKENS: int = int(BASE_CONTEXT_WINDOW * 0.75)
