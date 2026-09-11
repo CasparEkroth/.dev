@@ -14,11 +14,12 @@ agent-session until `/agent` switch / exit). See MCP_SUPPORT_PLAN.md §1.2.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import re
 import threading
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from typing import Any, Callable
 
 from mcp import ClientSession, StdioServerParameters
@@ -147,6 +148,17 @@ class _PersistentMcpConnection:
     ``run_coroutine_threadsafe``. Reconnect-per-call (``_call_mcp_tool``) is
     NOT reused here — this owns the connection for its whole lifetime
     instead of one connect/close per call.
+
+    The transport/session context managers are opened and closed inside a
+    single long-lived coroutine (``_main``), run as one asyncio Task for the
+    whole connection lifetime. anyio ties a transport's cancel scope to
+    whichever Task entered it; the earlier version opened the connection in
+    one `run_coroutine_threadsafe` call and closed it in another, handing
+    the transport's `__aexit__` a different Task than its `__aenter__` and
+    reliably raising "Attempted to exit cancel scope in a different task
+    than it was entered in" on shutdown. `list_tools`/`call_tool` don't have
+    this problem — they just await a plain coroutine on the session, not
+    enter/exit a context manager — so they can still run as one-off tasks.
     """
 
     def __init__(self, server_cfg: dict):
@@ -157,7 +169,8 @@ class _PersistentMcpConnection:
         )
         self._thread.start()
         self._session: ClientSession | None = None
-        self._exit_stack: AsyncExitStack | None = None
+        self._stop_event: asyncio.Event | None = None
+        self._main_future: concurrent.futures.Future | None = None
 
     def _timeout(self) -> float:
         return float(self._server_cfg.get("timeout") or DEFAULT_MCP_TIMEOUT)
@@ -167,17 +180,29 @@ class _PersistentMcpConnection:
             self._timeout()
         )
 
-    def connect(self) -> None:
-        async def _open():
-            self._exit_stack = AsyncExitStack()
-            transport = _build_transport(self._server_cfg)
-            read, write = await self._exit_stack.enter_async_context(transport)
-            self._session = await self._exit_stack.enter_async_context(
-                ClientSession(read, write)
-            )
-            await self._session.initialize()
+    async def _main(self, ready: concurrent.futures.Future) -> None:
+        self._stop_event = asyncio.Event()
+        try:
+            async with _build_transport(self._server_cfg) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    self._session = session
+                    ready.set_result(None)
+                    await self._stop_event.wait()
+        except Exception as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            else:
+                logger.warning("Persistent MCP connection failed", exc_info=True)
+        finally:
+            self._session = None
 
-        self._run(_open())
+    def connect(self) -> None:
+        ready: concurrent.futures.Future = concurrent.futures.Future()
+        self._main_future = asyncio.run_coroutine_threadsafe(
+            self._main(ready), self._loop
+        )
+        ready.result(timeout=self._timeout())
 
     def list_tools(self) -> list[Any]:
         if self._session is None:
@@ -191,23 +216,13 @@ class _PersistentMcpConnection:
         return _flatten_content(result.content, is_error=result.is_error)
 
     def close(self) -> None:
-        async def _close():
-            if self._exit_stack is not None:
-                await self._exit_stack.aclose()
-                self._exit_stack = None
-                self._session = None
-
         try:
-            if self._loop.is_running():
+            if self._stop_event is not None and self._loop.is_running():
+                self._loop.call_soon_threadsafe(self._stop_event.set)
+            if self._main_future is not None:
                 try:
-                    self._run(_close())
+                    self._main_future.result(timeout=self._timeout())
                 except Exception:
-                    # anyio transports (stdio_client) tie cancel scopes to
-                    # the asyncio Task that opened them; run_coroutine_threadsafe
-                    # gives close() a different Task than connect() used, so
-                    # the underlying transport's __aexit__ reliably raises here
-                    # even though the subprocess still exits. Non-fatal: don't
-                    # let teardown mask a successful run_task() result.
                     logger.warning(
                         "Error closing persistent MCP connection", exc_info=True
                     )

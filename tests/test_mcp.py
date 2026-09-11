@@ -338,12 +338,12 @@ def test_persistent_connection_close_stops_background_thread():
 
 
 def test_persistent_connection_close_does_not_raise_on_transport_teardown_error(caplog):
-    """Real anyio transports (stdio_client) tie cancel scopes to the asyncio
-    Task that opened them; connect()/close() each run on a fresh Task via
-    run_coroutine_threadsafe, so the transport's __aexit__ reliably raises on
-    close in production. close() must log and swallow this, not raise —
-    Agent.run_task()'s finally block has no try/except around closer(), so a
-    raise here would mask an otherwise-successful run."""
+    """Open and close both run inside the single `_main` Task for the
+    connection's whole lifetime (see _PersistentMcpConnection docstring), so
+    a transport `__aexit__` error surfaces there rather than in close()
+    itself. Either way, close() must not raise it — Agent.run_task()'s
+    finally block has no try/except around closer(), so a raise here would
+    mask an otherwise-successful run."""
 
     @asynccontextmanager
     async def close_raising_transport(*args, **kwargs):
@@ -360,7 +360,9 @@ def test_persistent_connection_close_does_not_raise_on_transport_teardown_error(
         with caplog.at_level("WARNING"):
             conn.close()  # must not raise
 
-    assert any("closing persistent" in r.getMessage().lower() for r in caplog.records)
+    assert any(
+        "persistent mcp connection" in r.getMessage().lower() for r in caplog.records
+    )
     assert not conn._thread.is_alive()
 
 
