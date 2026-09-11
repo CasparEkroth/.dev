@@ -1,5 +1,29 @@
 import unittest
-from scripts.vector.code.lang_adapters import get_adapter
+
+from scripts.vector.code.lang_adapters import (
+    SUFFIX_TO_LANG,
+    get_adapter,
+    resolve_language,
+)
+
+
+class TestSuffixLanguageMap(unittest.TestCase):
+    def test_map_covers_supported_languages(self):
+        self.assertEqual(resolve_language(".py"), "python")
+        self.assertEqual(resolve_language(".js"), "javascript")
+        self.assertEqual(resolve_language(".java"), "java")
+
+    def test_accepts_suffix_without_leading_dot(self):
+        self.assertEqual(resolve_language("py"), "python")
+
+    def test_unknown_suffix_returns_none(self):
+        self.assertIsNone(resolve_language(".rs"))
+        self.assertIsNone(resolve_language(""))
+
+    def test_map_keys_include_dotted_form(self):
+        # Path.suffix is dotted (".py"); keep that form as the primary key.
+        self.assertIn(".py", SUFFIX_TO_LANG)
+        self.assertEqual(SUFFIX_TO_LANG[".py"], "python")
 
 
 class TestLangAdapters(unittest.TestCase):

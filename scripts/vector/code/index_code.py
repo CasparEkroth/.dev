@@ -1,8 +1,5 @@
 from scripts.vector.embeddings import add_vector, VectorItem
-from scripts.vector.code.lang_adapters import (
-    SUFFIX_TO_LANG,
-    get_adapter,
-)
+from scripts.vector.code.lang_adapters import get_adapter, resolve_language
 from scripts.vector.code.adapter import Symbol
 from scripts.vector.prompts import SYMBOL_SUMMARY_PROMPT, FILE_SUMMARY_PROMPT
 from shared.llm_client import call_llm
@@ -95,9 +92,7 @@ def index_repo(repo_path):
         with open(file, "r") as f:
             code = f.read()
 
-        language = SUFFIX_TO_LANG.get(file.suffix) or SUFFIX_TO_LANG.get(
-            file.suffix.lstrip(".")
-        )
+        language = resolve_language(file.suffix)
 
         if language is None:
             continue

@@ -71,19 +71,12 @@ def main() -> None:
 
         print("Done")
 
-    elif args.command == "pdf":  # TODO add a index_pdf
+    elif args.command == "pdf":
         if not args.path.is_file() or args.path.suffix.lower() != ".pdf":
             parser.error(f"Expected PDF file: {args.path}")
 
-        from scripts.vector.embeddings import save_vectors
-
-        # from scripts.vector.pdf.index_pdf import index_pdf
-
         print(f"Indexing PDF: {args.path}")
         print("PDF indexing is not implemented yet")
-
-        # index_pdf(args.path)
-        # save_vectors(args.out)
 
     elif args.command == "search":
         if not args.vectors.is_file():

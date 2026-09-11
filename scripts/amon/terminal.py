@@ -364,11 +364,11 @@ def stream_action(event: str, data: dict, *, console: Console | None = None) -> 
         )
     elif event == "tool_call":
         if data.get("name") == "write_file":
-            formated = _format_write(data.get("args"))
-            body = f"[bold]{data.get('name')}[/bold]\n{formated}"
+            formatted = _format_write(data.get("args"))
+            body = f"[bold]{data.get('name')}[/bold]\n{formatted}"
         else:
-            formated = _format_args(data.get("args"))
-            body = f"[bold]{data.get('name')}[/bold]\n[dim]{formated}[/dim]"
+            formatted = _format_args(data.get("args"))
+            body = f"[bold]{data.get('name')}[/bold]\n[dim]{formatted}[/dim]"
         _print(
             Panel(
                 body,

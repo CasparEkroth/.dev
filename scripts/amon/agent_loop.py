@@ -32,11 +32,11 @@ def _is_context_length_error(exc: Exception) -> bool:
 
 
 def _normalize_message(msg: dict) -> dict:
-    role = msg.get("role")
-    content = str(msg.get("content") or "")
-    if role in ("system", "user", "assistant"):
-        return {"role": role, "content": content}
-    return {"role": role, "content": content}
+    """Keep role/content only — strips tool_calls and other extras for summaries."""
+    return {
+        "role": msg.get("role"),
+        "content": str(msg.get("content") or ""),
+    }
 
 
 def _trim_for_summary(conversation: list[dict], limit: int = 24) -> list[dict]:
@@ -763,7 +763,9 @@ acting on the skill itself."""
 
 
 def build_system_prompt(
-    base_prompt: str, skill_catalog: list[dict], template: str | None = None
+    base_prompt: str,
+    skill_catalog: list[dict] | dict,
+    template: str | None = None,
 ) -> str:
     """Assemble the system prompt from *template* (or the default one)."""
     skills_section = "\n".join(
