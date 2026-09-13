@@ -1,7 +1,14 @@
-from contextlib import contextmanager
+"""Interactive terminal UI for amon: footer, prompts, confirm, stream panels.
+
+Implementation is split across ``terminal_ui``, ``terminal_footer``, and
+``terminal_format``; this module re-exports the public surface so existing
+``from scripts.amon.terminal import …`` / ``scripts.amon import terminal``
+call sites stay stable.
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
-import json
-import pprint
 import re
 import sys
 import time
@@ -13,108 +20,44 @@ except ImportError:  # pragma: no cover - POSIX only
     termios = None
 
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from rich.spinner import Spinner
-
 import questionary
 from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.styles import Style
 from scripts.amon.memory import load_session, load_session_info
+from scripts.amon.terminal_footer import (
+    StatusFooter as StatusFooter,
+    _session_allowed_tools as _session_allowed_tools,
+    footer as footer,
+    reset_context as reset_context,
+    set_context_limit as set_context_limit,
+    update_footer as update_footer,
+)
+from scripts.amon.terminal_format import (
+    _format_args,
+    _format_write,
+    _render_spawn_agents_result as _render_spawn_agents_result,
+)
+from scripts.amon.terminal_ui import (
+    _pause_live,
+    _stderr_console,
+    _ui_print,
+    console as console,
+    spinner_context as spinner_context,
+)
 from scripts.amon.tools.agent import Agent
 from scripts.amon.tools.registry import READY_AGENTS
 from scripts.amon.tools.todo import get_todos, render_todos
-from config import BASE_CONTEXT_WINDOW
-
-console = Console()
-# Used only when stdout must stay machine-readable (e.g. --json).
-_stderr_console = Console(file=sys.stderr)
-_live: "Live | None" = None
 
 #: Matches one rendered checklist line, e.g. "◐ [in_progress] write tests"
 #: (see scripts.amon.tools.todo.render_todos) — used to pull just the
 #: checklist lines back out of a todo_write tool result string, which may
 #: also contain validation notes ahead of the rendered list.
 _TODO_LINE_RE = re.compile(r"^[○◐✓] \[(?:pending|in_progress|completed)\] .+$")
-
-
-class StatusFooter:
-    def __init__(self, context_limit: int = BASE_CONTEXT_WINDOW):
-        self.tokens = 0
-        self.context_limit = context_limit
-        self.context_current = 0
-        self.todo_lines: list[str] = []
-
-    def add_tokens(self, n: int) -> None:
-        self.tokens += n
-
-    def reset_footer(
-        self, token: bool = False, context: bool = False, todos: bool = False
-    ) -> None:
-        if token:
-            self.tokens = 0
-        if context:
-            self.context_current = 0
-        if todos:
-            self.todo_lines = []
-
-    def set_context(self, c: int | str) -> None:
-        self.context_current = c
-
-    def set_todo_lines(self, lines: list[str]) -> None:
-        self.todo_lines = lines
-
-    def render_html(self) -> HTML:
-        if isinstance(self.context_current, str):
-            ctx = f"{self.context_current}/{self.context_limit:,}"
-            pct = 0.0
-        else:
-            ctx = f"{self.context_current:,}/{self.context_limit:,}"
-            pct = (
-                (self.context_current / self.context_limit) * 100
-                if self.context_limit
-                else 0.0
-            )
-        header = (
-            f"Tokens: <b>{self.tokens:,}</b>   |   Context: <b>{ctx}</b> ({pct:.1f}%)"
-        )
-        if not self.todo_lines:
-            return HTML(header)
-        # todo_lines is free-form text a todo_write call wrote — it can
-        # contain "<" / "&" (e.g. "fix List<int> handling"), which HTML()
-        # would otherwise try to parse as markup and raise ExpatError,
-        # crashing the bottom-toolbar render. header's own <b> tags are real
-        # markup and must NOT go through this escaping, so only the
-        # placeholder gets it via .format().
-        return HTML(header + "\n{}").format("\n".join(self.todo_lines))
-
-
-footer = StatusFooter()
-
-#: Tool names approved for the rest of the current REPL session via the
-#: confirm prompt's "always" answer. Cleared on /new, same as the footer.
-_session_allowed_tools: set[str] = set()
-
-
-def update_footer(tokens_added: int = 0, context: int | str | None = None) -> None:
-    if tokens_added:
-        footer.add_tokens(tokens_added)
-    if context is not None:
-        footer.set_context(context)
-
-
-def reset_context() -> None:
-    footer.reset_footer(context=True, todos=True)
-    _session_allowed_tools.clear()
-
-
-def set_context_limit(limit: int) -> None:
-    footer.context_limit = limit
 
 
 def show_welcome(session_id: UUID) -> None:
@@ -158,52 +101,6 @@ def show_welcome(session_id: UUID) -> None:
                 )
 
 
-@contextmanager
-def spinner_context(label: str = "Thinking…", *, stderr: bool = False):
-    """Show a transient spinner while work runs.
-
-    Interactive / pretty output must share the same Console as panels, otherwise
-    Live (spinner) and stdout prints fight over the cursor and borders clip.
-
-    Pass stderr=True only for machine-readable modes (--json) so stdout stays clean.
-    """
-    global _live
-    target = _stderr_console if stderr else console
-    with Live(
-        Spinner("dots", text=f" {label}"),
-        console=target,
-        transient=True,
-        refresh_per_second=10,
-        # vertical_overflow keeps long panel prints from shredding the live line
-        vertical_overflow="visible",
-    ) as live:
-        _live = live
-        try:
-            yield
-        finally:
-            _live = None
-
-
-@contextmanager
-def _pause_live():
-    """Stop the spinner Live around multi-line UI so borders don't clip/race."""
-    live = _live
-    if live is not None:
-        live.stop()
-    try:
-        yield
-    finally:
-        if live is not None and _live is live:
-            # Only restart if spinner_context still owns this Live instance.
-            live.start()
-
-
-def _ui_print(*args, **kwargs) -> None:
-    """Print UI chrome without fighting the active spinner."""
-    with _pause_live():
-        console.print(*args, **kwargs)
-
-
 def _toolbar_text():
     return footer.render_html()
 
@@ -237,45 +134,6 @@ def pick_session(sessions: list[tuple[Path, float]]) -> Path | None:
         choices.append(questionary.Choice(title=label, value=p))
     choices.append(questionary.Choice(title="[cancel]", value=None))
     return questionary.select("Pick a session to resume:", choices=choices).ask()
-
-
-def _format_args(args) -> str:
-    """Pretty-format tool args so panel borders wrap cleanly."""
-    width = max(40, (console.width or 80) - 8)
-    try:
-        return pprint.pformat(args, width=width, compact=True, sort_dicts=False)
-    except Exception:
-        return str(args)
-
-
-def _format_write(args: dict | list | None) -> str:
-    """Format write_file args with red old / green new markup.
-
-    write_file tool args look like:
-      {"content": [{"path": "...", "old": "...", "new": "..."}, ...]}
-    """
-    from rich.markup import escape
-
-    if isinstance(args, dict):
-        items = args.get("content") or []
-    elif isinstance(args, list):
-        items = args
-    else:
-        items = []
-
-    parts: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        path = escape(str(item.get("path") or ""))
-        old_text = escape(str(item.get("old") or "-"))
-        new_text = escape(str(item.get("new") or ""))
-        parts.append(
-            f"[cyan]{path}[/cyan]\n"
-            f"[bold red]- {old_text}[/bold red]\n"
-            f"[bold green]+ {new_text}[/bold green]"
-        )
-    return "\n\n".join(parts) if parts else _format_args(args)
 
 
 def _restore_echo() -> None:
@@ -350,7 +208,7 @@ def stream_action(event: str, data: dict, *, console: Console | None = None) -> 
     def _print(*args, **kwargs) -> None:
         # Stdout path shares Live with the spinner; stderr does not.
         if out is globals()["console"]:
-            _ui_print(*args, **kwargs)
+            _ui_print(*args, console=out, **kwargs)
         else:
             out.print(*args, **kwargs)
 
@@ -434,49 +292,6 @@ def stream_action(event: str, data: dict, *, console: Console | None = None) -> 
         line = data.get("line", "")
         body = escape(f"  │ [{agent}] {line}")
         _print(f"[dim]{body}[/dim]")
-
-
-def _render_spawn_agents_result(content: str):
-    """A small table instead of a wall of raw JSON, when it parses cleanly.
-
-    ``content`` may already be truncated (see truncate_tool_output) — a cut
-    mid-JSON is expected sometimes, not a bug, so fall back to the plain
-    panel rather than raising.
-    """
-    fallback = Panel(
-        content[:600] + ("..." if len(content) > 600 else ""),
-        title="[dim]← Result from spawn_agents[/dim]",
-        border_style="dim",
-    )
-    try:
-        results = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
-        return fallback
-    if not isinstance(results, list):
-        return fallback
-
-    table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
-    table.add_column("Agent")
-    table.add_column("OK")
-    table.add_column("Tokens", justify="right")
-    table.add_column("Turns", justify="right")
-    table.add_column("Session")
-    for r in results:
-        if not isinstance(r, dict):
-            continue
-        ok_text = "[green]✓[/green]" if r.get("ok") else "[red]✗[/red]"
-        tokens = (r.get("usage") or {}).get("total_tokens", 0)
-        session = str(r.get("session_id") or "-")[:8]
-        table.add_row(
-            str(r.get("agent", "?")),
-            ok_text,
-            str(tokens),
-            str(r.get("turns", "-")),
-            session,
-        )
-    return Panel(
-        table, title="[cyan]☰ spawn_agents results[/cyan]", border_style="cyan"
-    )
 
 
 def stream_action_stderr(event: str, data: dict) -> None:

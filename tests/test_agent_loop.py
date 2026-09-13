@@ -355,9 +355,9 @@ class TestCancellation:
 class TestCompactConversation:
     def _patch(self, monkeypatch, raw):
         monkeypatch.setattr(
-            "scripts.amon.agent_loop.call_llm", lambda prompt: self._seen(prompt)
+            "scripts.amon.compaction.call_llm", lambda prompt: self._seen(prompt)
         )
-        monkeypatch.setattr("scripts.amon.agent_loop.parse_llm_json", lambda _: raw)
+        monkeypatch.setattr("scripts.amon.compaction.parse_llm_json", lambda _: raw)
 
     def _seen(self, prompt):
         self.prompt = prompt
@@ -453,7 +453,7 @@ class TestRenderCompactSummary:
 
 class TestAutoCompaction:
     def test_not_compacted_below_the_threshold(self):
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
                 registry=_registry(lambda **kw: "ok"),
@@ -462,7 +462,7 @@ class TestAutoCompaction:
         compact.assert_not_called()
 
     def test_compacted_above_the_threshold(self):
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = {
                 "goal": "summary",
                 "done": [],
@@ -480,7 +480,7 @@ class TestAutoCompaction:
         assert "summary" in second_turn[0]["content"]
 
     def test_tool_replies_keep_their_parent(self):
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = {
                 "goal": "summary",
                 "done": [],
@@ -503,7 +503,7 @@ class TestAutoCompaction:
                 assert parents, "tool message lost the assistant turn it belongs to"
 
     def test_compacts_only_the_head(self):
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = {
                 "goal": "summary",
                 "done": [],
@@ -520,7 +520,7 @@ class TestAutoCompaction:
         assert all(not m.get("tool_calls") for m in head)
 
     def test_failed_summary_leaves_the_conversation_intact(self):
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = None
             _, llm = _run(
                 [_response(tool_calls=_tool_call()), _response(content="done")],
@@ -650,7 +650,7 @@ class TestModelCallFailure:
             {"role": "user", "content": "more context"},
         ]
 
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = {
                 "goal": "summary",
                 "done": [],
@@ -690,7 +690,7 @@ class TestModelCallFailure:
             {"role": "tool", "tool_call_id": "call_1", "content": "result 1"},
         ]
 
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = {
                 "goal": "summary",
                 "done": [],
@@ -739,7 +739,7 @@ class TestModelCallFailure:
             {"role": "user", "content": "later"},
         ]
 
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = {
                 "goal": "summary",
                 "done": [],
@@ -777,7 +777,7 @@ class TestModelCallFailure:
             {"role": "user", "content": "the brand new task, still unanswered"},
         ]
 
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = {
                 "goal": "summary",
                 "done": [],
@@ -799,7 +799,7 @@ class TestModelCallFailure:
         from scripts.amon.agent_loop import _compact_history
 
         conversation = [{"role": "user", "content": "brand new task"}]
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             assert _compact_history(conversation) is False
         compact.assert_not_called()
         assert conversation == [{"role": "user", "content": "brand new task"}]
@@ -1088,7 +1088,7 @@ class TestEventLog:
 
     def test_compact_event_logged_on_threshold_trigger(self):
         events = []
-        with patch("scripts.amon.agent_loop.compact_conversation") as compact:
+        with patch("scripts.amon.compaction.compact_conversation") as compact:
             compact.return_value = {
                 "goal": "summary",
                 "done": [],
@@ -1479,7 +1479,7 @@ class TestFileEventLog:
     def test_delegates_to_append_event_with_the_events_session_id(self):
         from scripts.amon.agent_loop import file_event_log
 
-        with patch("scripts.amon.agent_loop.append_event") as append:
+        with patch("scripts.amon.agent_result.append_event") as append:
             file_event_log({"session_id": "abc-123", "event": "turn"})
         append.assert_called_once_with(
             "abc-123", {"session_id": "abc-123", "event": "turn"}
@@ -1488,7 +1488,7 @@ class TestFileEventLog:
     def test_drops_events_with_no_session_id(self):
         from scripts.amon.agent_loop import file_event_log
 
-        with patch("scripts.amon.agent_loop.append_event") as append:
+        with patch("scripts.amon.agent_result.append_event") as append:
             file_event_log({"event": "turn", "session_id": None})
         append.assert_not_called()
 

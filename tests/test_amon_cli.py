@@ -54,14 +54,14 @@ def _ok_result(**overrides):
 def _run_repl(user_input: str, result: AgentResult, agent=None):
     args = argparse.Namespace(agent="dev")
     with (
-        patch("scripts.amon.amon_cli.READY_AGENTS", {"dev": agent or _fake_agent()}),
-        patch("scripts.amon.amon_cli.run_agent", return_value=result) as run_agent,
+        patch("scripts.amon.cli_interactive.READY_AGENTS", {"dev": agent or _fake_agent()}),
+        patch("scripts.amon.cli_interactive.run_agent", return_value=result) as run_agent,
         patch(
-            "scripts.amon.amon_cli.terminal.make_prompt_session",
+            "scripts.amon.cli_interactive.terminal.make_prompt_session",
             return_value=_OneShotPromptSession(user_input),
         ),
-        patch("scripts.amon.amon_cli.terminal.show_welcome"),
-        patch("scripts.amon.amon_cli._resolve_session_id", return_value=uuid4()),
+        patch("scripts.amon.cli_interactive.terminal.show_welcome"),
+        patch("scripts.amon.cli_interactive._resolve_session_id", return_value=uuid4()),
     ):
         _run_interactive(args)
     return run_agent
@@ -111,7 +111,7 @@ class TestGracefulCancel:
     def test_forwards_a_cancel_fn_and_restores_the_previous_handler(self):
         previous = signal.getsignal(signal.SIGINT)
         with patch(
-            "scripts.amon.amon_cli.run_agent", return_value=_ok_result()
+            "scripts.amon.cli_interactive.run_agent", return_value=_ok_result()
         ) as run_agent:
             _run_agent_cancelable(system_prompt="sys", user_input="task")
         assert callable(run_agent.call_args.kwargs["cancel_fn"])
@@ -126,7 +126,7 @@ class TestGracefulCancel:
             os_kill_self_sigint()
             return _ok_result()
 
-        with patch("scripts.amon.amon_cli.run_agent", side_effect=fake_run_agent):
+        with patch("scripts.amon.cli_interactive.run_agent", side_effect=fake_run_agent):
             _run_agent_cancelable(system_prompt="sys", user_input="task")
         assert seen_cancel_fn["fn"]() is True
 
@@ -136,7 +136,7 @@ class TestGracefulCancel:
             os_kill_self_sigint()
             return _ok_result()
 
-        with patch("scripts.amon.amon_cli.run_agent", side_effect=fake_run_agent):
+        with patch("scripts.amon.cli_interactive.run_agent", side_effect=fake_run_agent):
             try:
                 _run_agent_cancelable(system_prompt="sys", user_input="task")
             except KeyboardInterrupt:
@@ -158,17 +158,17 @@ class TestCompactCommand:
     def _run_compact(self, conversation, compact_history_return):
         args = argparse.Namespace(agent="dev")
         with (
-            patch("scripts.amon.amon_cli.READY_AGENTS", {"dev": _fake_agent()}),
+            patch("scripts.amon.cli_interactive.READY_AGENTS", {"dev": _fake_agent()}),
             patch(
-                "scripts.amon.amon_cli.terminal.make_prompt_session",
+                "scripts.amon.cli_interactive.terminal.make_prompt_session",
                 return_value=_OneShotPromptSession("/compact"),
             ),
-            patch("scripts.amon.amon_cli.terminal.show_welcome"),
-            patch("scripts.amon.amon_cli._resolve_session_id", return_value=uuid4()),
-            patch("scripts.amon.amon_cli.load_session", return_value=conversation),
-            patch("scripts.amon.amon_cli.save_session") as save,
+            patch("scripts.amon.cli_interactive.terminal.show_welcome"),
+            patch("scripts.amon.cli_interactive._resolve_session_id", return_value=uuid4()),
+            patch("scripts.amon.cli_interactive.load_session", return_value=conversation),
+            patch("scripts.amon.cli_interactive.save_session") as save,
             patch(
-                "scripts.amon.amon_cli._compact_history",
+                "scripts.amon.cli_interactive._compact_history",
                 side_effect=compact_history_return,
             ) as compact,
         ):
@@ -226,18 +226,18 @@ class TestResumeAgentAffinityWarning:
                 f"'{session_agent}', but you're resuming with '{agent_arg}'."
             )
         with (
-            patch("scripts.amon.amon_cli.READY_AGENTS", {agent_arg: _fake_agent()}),
+            patch("scripts.amon.cli_interactive.READY_AGENTS", {agent_arg: _fake_agent()}),
             patch(
-                "scripts.amon.amon_cli.terminal.make_prompt_session",
+                "scripts.amon.cli_interactive.terminal.make_prompt_session",
                 return_value=_OneShotPromptSession(None),
             ),
-            patch("scripts.amon.amon_cli.terminal.show_welcome"),
-            patch("scripts.amon.amon_cli._resolve_session_id", return_value=uuid4()),
+            patch("scripts.amon.cli_interactive.terminal.show_welcome"),
+            patch("scripts.amon.cli_interactive._resolve_session_id", return_value=uuid4()),
             patch(
-                "scripts.amon.amon_cli.agent_mismatch_warning",
+                "scripts.amon.cli_interactive.agent_mismatch_warning",
                 return_value=warning,
             ),
-            patch("scripts.amon.amon_cli.terminal.console.print") as console_print,
+            patch("scripts.amon.cli_interactive.terminal.console.print") as console_print,
         ):
             _run_interactive(args)
         return [str(c.args[0]) for c in console_print.call_args_list]
@@ -290,21 +290,21 @@ class TestInteractiveMcpCloserLifecycle:
         args = argparse.Namespace(agent="first")
         with (
             patch(
-                "scripts.amon.amon_cli.READY_AGENTS",
+                "scripts.amon.cli_interactive.READY_AGENTS",
                 {"first": first, "second": second},
             ),
             patch(
-                "scripts.amon.amon_cli.terminal.make_prompt_session",
+                "scripts.amon.cli_interactive.terminal.make_prompt_session",
                 return_value=_SwitchThenExit(),
             ),
-            patch("scripts.amon.amon_cli.terminal.show_welcome"),
-            patch("scripts.amon.amon_cli._resolve_session_id", return_value=uuid4()),
-            patch("scripts.amon.amon_cli.agent_mismatch_warning", return_value=None),
+            patch("scripts.amon.cli_interactive.terminal.show_welcome"),
+            patch("scripts.amon.cli_interactive._resolve_session_id", return_value=uuid4()),
+            patch("scripts.amon.cli_interactive.agent_mismatch_warning", return_value=None),
             patch(
-                "scripts.amon.amon_cli._discover_agent_mcp_tools",
+                "scripts.amon.cli_interactive._discover_agent_mcp_tools",
                 side_effect=discover,
             ),
-            patch("scripts.amon.amon_cli.terminal.pick_agents", return_value="second"),
+            patch("scripts.amon.cli_interactive.terminal.pick_agents", return_value="second"),
         ):
             _run_interactive(args)
 

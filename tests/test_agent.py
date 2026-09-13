@@ -195,7 +195,11 @@ def test_agent_new_field_defaults(tmp_path):
     assert agent.denied_commands == []
 
 
-def test_run_task_forwards_new_fields():
+def test_run_task_forwards_new_fields(monkeypatch):
+    # Hermetic: ambient AMON_STREAM/AMON_EVENTS (e.g. from a parent agent run)
+    # must not flip the stream_actions / event_log defaults this test pins.
+    monkeypatch.delenv("AMON_STREAM", raising=False)
+    monkeypatch.delenv("AMON_EVENTS", raising=False)
     agent = Agent(
         name="a",
         description="d",
@@ -221,6 +225,7 @@ def test_run_task_forwards_new_fields():
     assert kwargs["model"] == "pinned-model"
     assert kwargs["max_tool_output_chars"] == 50_000
     assert kwargs["stream_actions"] is None
+    assert kwargs["event_log"] is None
     assert kwargs["agent_name"] == "a"
     # mcp_servers is discovered and merged into tool_registry (get_registry's
     # extra_tools), not forwarded to run_agent as its own kwarg.
