@@ -64,7 +64,7 @@ def show_welcome(session_id: UUID) -> None:
     console.print(
         Panel(
             "[bold cyan]Agent[/bold cyan]  [dim]AI coding assistant[/dim]",
-            subtitle="[dim]/exit · /agent · /new · /sessions[/dim]",
+            subtitle="[dim]/exit · /agent · /new · /sessions · /compact[/dim]",
             border_style="cyan",
         )
     )
