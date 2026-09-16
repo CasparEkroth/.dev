@@ -1,9 +1,16 @@
+"""Core agent turn loop: LLM calls, tool dispatch, hooks, compaction triggers.
+
+Compaction helpers live in ``scripts.amon.compaction``; result/usage helpers and
+``truncate_tool_output`` in ``scripts.amon.agent_result``; system-prompt assembly
+in ``scripts.amon.system_prompt``. Symbols are re-exported here so existing
+``from scripts.amon.agent_loop import …`` call sites and test patches keep
+working unchanged.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
-from uuid import UUID, uuid4
+from uuid import UUID
 import os
 import json
 import time
@@ -14,307 +21,56 @@ from config import (
     MAX_TOOL_OUTPUT_CHARS,
     TOOL_OUTPUT_DIR,
 )
+from scripts.amon.agent_result import (
+    AgentResult,
+    _add_usage,
+    _empty_usage,
+    _preview,
+    _turn_usage,
+    file_event_log,
+    truncate_tool_output,
+)
+from scripts.amon.compaction import (
+    _compact_history,
+    _compaction_plan,
+    _force_hard_trim,
+    _render_compact_summary,
+    _strip_unfinished_tool_turns,
+    compact_conversation,
+)
 from scripts.amon.hooks import HookEventName, run_hook_event
 from scripts.amon.memory import (
-    append_event,
     save_context_tokens,
     save_session,
     save_session_info,
     load_session,
 )
+from scripts.amon.system_prompt import (
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE,
+    build_system_prompt,
+)
 from scripts.amon.tools.todo import get_todos, render_todos
-from shared.llm_client import call_llm, call_llm_with_tools, parse_llm_json
+from shared.llm_client import call_llm_with_tools
 
-
-def _is_context_length_error(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return "context_length_exceeded" in text or "exceed the configured limit" in text
-
-
-def _normalize_message(msg: dict) -> dict:
-    role = msg.get("role")
-    content = str(msg.get("content") or "")
-    if role in ("system", "user", "assistant"):
-        return {"role": role, "content": content}
-    return {"role": role, "content": content}
-
-
-def _trim_for_summary(conversation: list[dict], limit: int = 24) -> list[dict]:
-    if len(conversation) <= limit:
-        return [_normalize_message(m) for m in conversation]
-    head = conversation[: max(4, limit // 3)]
-    tail = conversation[-max(8, (limit * 2) // 3) :]
-    return [
-        _normalize_message(m)
-        for m in head
-        + [
-            {
-                "role": "user",
-                "content": "[... earlier conversation omitted for compaction ...]",
-            }
-        ]
-        + tail
-    ]
-
-
-def compact_conversation(conversation: list[dict]) -> dict | None:
-    """Summarize *conversation* into a small structured object, or None on failure.
-
-    Uses bounded input first so compaction itself can recover from oversized
-    histories. Falls back to a deterministic hard trim if the model still
-    refuses because of context length.
-    """
-    if not conversation:
-        return None
-
-    candidate = _trim_for_summary(conversation)
-    prompt = (
-        "Summarize this conversation into a JSON object with exactly these "
-        'keys: "goal" (string — the user\'s overall objective), "done" '
-        "(array of strings — what has been completed so far), "
-        '"open_questions" (array of strings — unresolved questions or '
-        'decisions), "key_paths" (array of strings — file paths or '
-        "resources touched that still matter). Return only valid JSON. "
-        f"Conversation:\n{candidate}"
-    )
-
-    try:
-        parsed = parse_llm_json(call_llm(prompt))
-    except Exception as exc:  # noqa: BLE001
-        if not _is_context_length_error(exc):
-            return None
-        parsed = None
-
-    if not isinstance(parsed, dict):
-        return None
-
-    summary = {
-        "goal": str(parsed.get("goal") or "").strip(),
-        "done": [str(x) for x in parsed.get("done") or [] if str(x).strip()],
-        "open_questions": [
-            str(x) for x in parsed.get("open_questions") or [] if str(x).strip()
-        ],
-        "key_paths": [str(x) for x in parsed.get("key_paths") or [] if str(x).strip()],
-    }
-    if not any(summary.values()):
-        return None
-    return summary
-
-
-def _render_compact_summary(summary: dict) -> str:
-    """Render a structured compact summary into a single message body."""
-    lines = ["[Earlier conversation summarized]"]
-    if summary.get("goal"):
-        lines.append(f"Goal: {summary['goal']}")
-    for label, key in (
-        ("Done", "done"),
-        ("Open questions", "open_questions"),
-        ("Key paths", "key_paths"),
-    ):
-        items = summary.get(key) or []
-        if items:
-            lines.append(f"{label}:")
-            lines.extend(f"- {item}" for item in items)
-    return "\n".join(lines)
-
-
-def _strip_unfinished_tool_turns(conversation: list[dict]) -> list[dict]:
-    clean = list(conversation)
-    while True:
-        last_assistant = next(
-            (
-                i
-                for i in range(len(clean) - 1, -1, -1)
-                if clean[i].get("role") == "assistant" and clean[i].get("tool_calls")
-            ),
-            None,
-        )
-        if last_assistant is None:
-            return clean
-        tool_ids = [
-            c.get("id")
-            for c in clean[last_assistant].get("tool_calls", [])
-            if c.get("id")
-        ]
-        if not tool_ids:
-            clean = clean[:last_assistant]
-            continue
-        seen = {tool_id: False for tool_id in tool_ids}
-        for msg in clean[last_assistant + 1 :]:
-            if msg.get("role") == "tool" and msg.get("tool_call_id") in seen:
-                seen[msg.get("tool_call_id")] = True
-        if all(seen.values()):
-            return clean
-        clean = clean[:last_assistant]
-
-
-def _compaction_plan(conversation: list[dict]) -> tuple[list[dict], int] | None:
-    """Return (safe, cut): safe is *conversation* with unfinished tool turns
-    stripped, cut is the index up to which it could be summarized. None means
-    there's nothing worth compacting — e.g. only the current, unanswered user
-    message survives stripping — distinct from "the model call failed."
-    """
-    safe = _strip_unfinished_tool_turns(conversation)
-    if not safe:
-        return None
-    cut = next(
-        (
-            i
-            for i in range(len(safe) - 1, -1, -1)
-            if safe[i].get("role") == "assistant" and safe[i].get("tool_calls")
-        ),
-        len(safe),
-    )
-    # A trailing, not-yet-answered user message is the current task, not
-    # history — never let it get folded into the summary.
-    if safe[-1].get("role") == "user":
-        cut = min(cut, len(safe) - 1)
-    if cut <= 0:
-        return None
-    return safe, cut
-
-
-def _compact_history(conversation: list[dict]) -> bool:
-    """Summarize *conversation* in place, preserving only complete tool cycles
-    and the current user task's own text.
-
-    Returns False when the summary was unusable (or there was nothing left
-    worth summarizing) and nothing changed.
-    """
-    plan = _compaction_plan(conversation)
-    if plan is None:
-        return False
-    safe, cut = plan
-    summary = compact_conversation(safe[:cut])
-    if not summary:
-        return False
-    summary_message = {"role": "user", "content": _render_compact_summary(summary)}
-    conversation[:] = [summary_message] + safe[cut:]
-    return True
-
-
-def _force_hard_trim(conversation: list[dict], keep: int = 12) -> bool:
-    if len(conversation) <= keep:
-        return False
-    prefix = [m for m in conversation[:-keep] if m.get("role") == "system"][:1]
-    suffix = [_normalize_message(m) for m in conversation[-keep:]]
-    conversation[:] = (
-        prefix
-        + [
-            {
-                "role": "user",
-                "content": "[conversation truncated to preserve context window]",
-            }
-        ]
-        + suffix
-    )
-    return True
-
-
-def truncate_tool_output(
-    text: str,
-    tool: str = "",
-    session_id: UUID | str | None = None,
-    limit: int = MAX_TOOL_OUTPUT_CHARS,
-    spill_dir: Path = TOOL_OUTPUT_DIR,
-) -> str:
-    """Cap one tool result at *limit*, keeping its head and tail.
-
-    The full text is written to *spill_dir* and the marker names that file, so
-    one verbose command cannot exhaust the context window and nothing is lost.
-    """
-    if len(text) <= limit:
-        return text
-
-    spill_dir.mkdir(parents=True, exist_ok=True)
-    spill = (
-        spill_dir
-        / f"{session_id or 'nosession'}_{tool or 'tool'}_{uuid4().hex[:8]}.txt"
-    )
-    spill.write_text(text, encoding="utf-8")
-
-    head_len = limit * 6 // 10
-    tail_len = limit - head_len
-    marker = (
-        f"\n… [truncated {len(text) - limit} of {len(text)} chars — "
-        f"full output: {spill} (read it with read_file)] …\n"
-    )
-    return f"{text[:head_len]}{marker}{text[-tail_len:]}"
-
-
-@dataclass
-class AgentResult:
-    """Structured result returned by run_agent."""
-
-    ok: bool
-    result: str | None
-    error: str | None = None
-    usage: dict[str, int] = field(
-        default_factory=lambda: {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
-    )
-    turns: int = 0
-    tools_used: list[str] = field(default_factory=list)
-    session_id: str | None = None
-
-    def to_dict(self) -> dict:
-        return {
-            "ok": self.ok,
-            "result": self.result,
-            "error": self.error,
-            "usage": dict(self.usage),
-            "turns": self.turns,
-            "tools_used": list(self.tools_used),
-            "session_id": self.session_id,
-        }
-
-
-def file_event_log(event: dict) -> None:
-    """Default `event_log` sink: append to `{session_id}.events.jsonl`.
-
-    Callers gate this behind `AMON_EVENTS` (same pattern `AMON_STREAM` uses
-    for `stream_action_stderr`) — an event with no session_id (an ephemeral
-    run with nothing to attach it to) is silently dropped rather than
-    raised, since there's nowhere sensible to write it.
-    """
-    session_id = event.get("session_id")
-    if session_id:
-        append_event(session_id, event)
-
-
-def _preview(text: str, limit: int = 60) -> str:
-    """First line of *text*, collapsed and capped, for session listings."""
-    flat = " ".join(text.split())
-    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
-
-
-def _empty_usage() -> dict[str, int]:
-    return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-
-
-def _turn_usage(raw: dict | None) -> dict[str, int]:
-    """Normalize one LLM response usage blob."""
-    raw = raw or {}
-    prompt = int(raw.get("prompt_tokens") or 0)
-    completion = int(raw.get("completion_tokens") or 0)
-    total = int(raw.get("total_tokens") or (prompt + completion) or 0)
-    return {
-        "prompt_tokens": prompt,
-        "completion_tokens": completion,
-        "total_tokens": total,
-    }
-
-
-def _add_usage(acc: dict[str, int], turn: dict[str, int]) -> dict[str, int]:
-    """Accumulate usage across turns (full-run totals)."""
-    return {
-        "prompt_tokens": acc["prompt_tokens"] + turn["prompt_tokens"],
-        "completion_tokens": acc["completion_tokens"] + turn["completion_tokens"],
-        "total_tokens": acc["total_tokens"] + turn["total_tokens"],
-    }
+# Re-export public + test-patched symbols at this module path.
+__all__ = [
+    "AgentResult",
+    "DEFAULT_SYSTEM_PROMPT_TEMPLATE",
+    "build_system_prompt",
+    "compact_conversation",
+    "file_event_log",
+    "run_agent",
+    "truncate_tool_output",
+    "_add_usage",
+    "_compact_history",
+    "_compaction_plan",
+    "_empty_usage",
+    "_force_hard_trim",
+    "_preview",
+    "_render_compact_summary",
+    "_strip_unfinished_tool_turns",
+    "_turn_usage",
+]
 
 
 def run_agent(
@@ -735,41 +491,4 @@ def run_agent(
         result=last_content or None,
         error=stop_error,
         turns=turns_taken,
-    )
-
-
-#: Placeholders: {prompt}, {workspace}, {skills}. An agent can replace this via
-#: `system_prompt_template` — e.g. to drop the load_skill mandate. Literal braces
-#: in a custom template must be doubled.
-DEFAULT_SYSTEM_PROMPT_TEMPLATE = """{prompt}
-
-## Workspace
-The project working directory is: {workspace}
-Skills live under ~/.amon/skills and are shared across projects — their paths are \
-absolute and unrelated to the workspace. When running `shell`/`shell_readonly` \
-commands (e.g. invoking a skill's script), always pass `cwd={workspace}` \
-(or a path inside it) unless the user asks you to operate elsewhere. Never infer \
-cwd from a skill's path.
-
-## Available Skills
-{skills}
-
-When the user's request matches one of the above skills, load it with \
-`load_skill(skill_path=<path>)` before following any of its instructions — do \
-not run shell commands or read files as part of that skill's workflow until \
-it's loaded. This doesn't have to be your very first tool call of the turn \
-(e.g. setting up a checklist first is fine); it must come before you start \
-acting on the skill itself."""
-
-
-def build_system_prompt(
-    base_prompt: str, skill_catalog: list[dict], template: str | None = None
-) -> str:
-    """Assemble the system prompt from *template* (or the default one)."""
-    skills_section = "\n".join(
-        f"- {s['name']} (skill_path: {s['path']}): {s['description']}"
-        for s in skill_catalog
-    )
-    return (template or DEFAULT_SYSTEM_PROMPT_TEMPLATE).format(
-        prompt=base_prompt, workspace=Path.cwd(), skills=skills_section
     )

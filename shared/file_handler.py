@@ -1,5 +1,7 @@
-from pathlib import Path
+from __future__ import annotations
+
 import os
+from pathlib import Path
 
 from shared.path_guard import check_path_access
 
@@ -9,7 +11,6 @@ def scan_folder(
     excluded_dirs: set[str] | None = None,
     suffixes: set[str] | None = None,
 ) -> list[Path]:
-
     excluded_dirs = excluded_dirs or set()
     if suffixes is not None:
         suffixes = {suffix.lstrip(".") for suffix in suffixes}
@@ -47,8 +48,8 @@ def read_files(paths: list[Path]) -> list[dict]:
 
 def read_file(
     path: str,
-    start_line: int = None,
-    end_line: int = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
     allow_paths: list[str] | None = None,
     deny_paths: list[str] | None = None,
 ) -> dict:
@@ -57,10 +58,6 @@ def read_file(
     with open(abspath, "r") as f:
         content = f.read()
 
-    if content is None:
-        return {
-            "ok": False,
-        }
     lines = content.splitlines()
     total_lines = len(lines)
 
@@ -115,7 +112,7 @@ def write_file(
             results.append(f"{path}: {'overwritten' if existed else 'created file'}")
             continue
 
-        # handel old is eampty####
+        # Empty ``old``: create missing file, or append to an existing one.
         if not path.is_file():
             if old == "" and new != "":
                 path.parent.mkdir(parents=True, exist_ok=True)

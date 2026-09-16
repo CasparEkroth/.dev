@@ -48,7 +48,9 @@ class TestIndexRepo(unittest.TestCase):
                     indexer, "llm_summarize_symbol", return_value="symbol summary"
                 ),
                 patch.object(indexer, "add_vector", side_effect=added.append),
-                patch.object(indexer, "SUFFIX_TO_LANG", {".py": "python"}),
+                patch.object(
+                    indexer, "resolve_language", side_effect=lambda s: "python"
+                ),
                 patch.object(
                     indexer, "get_adapter", return_value=FakeAdapter([symbol])
                 ),
@@ -95,7 +97,9 @@ class TestIndexRepo(unittest.TestCase):
                     indexer, "llm_summarize_file", return_value="file summary"
                 ),
                 patch.object(indexer, "add_vector", side_effect=added.append),
-                patch.object(indexer, "SUFFIX_TO_LANG", {".py": "python"}),
+                patch.object(
+                    indexer, "resolve_language", side_effect=lambda s: "python"
+                ),
                 patch.object(indexer, "get_adapter", return_value=FakeAdapter([])),
             ):
                 indexer.index_repo(repo)
@@ -147,7 +151,7 @@ class TestIndexRepo(unittest.TestCase):
                 patch.object(indexer, "scan_folder", return_value=[file]),
                 patch.object(indexer, "should_skip", return_value=False),
                 patch.object(indexer, "add_vector", side_effect=added.append),
-                patch.object(indexer, "SUFFIX_TO_LANG", {}),
+                patch.object(indexer, "resolve_language", return_value=None),
             ):
                 indexer.index_repo(repo)
 

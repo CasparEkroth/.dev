@@ -1,6 +1,24 @@
+from __future__ import annotations
+
 from scripts.vector.code.adapter import LanguageAdapter
 
-SUFFIX_TO_LANG = {"py": "python", "js": "javascript", "java": "java"}
+# Path.suffix is dotted (".py"); accept both forms via resolve_language().
+SUFFIX_TO_LANG = {
+    ".py": "python",
+    ".js": "javascript",
+    ".java": "java",
+    # Bare forms kept for callers that strip the leading dot themselves.
+    "py": "python",
+    "js": "javascript",
+    "java": "java",
+}
+
+
+def resolve_language(suffix: str) -> str | None:
+    """Map a file suffix (with or without leading ``.``) to a language id."""
+    if not suffix:
+        return None
+    return SUFFIX_TO_LANG.get(suffix) or SUFFIX_TO_LANG.get(suffix.lstrip("."))
 
 
 def get_adapter(language: str) -> LanguageAdapter:
