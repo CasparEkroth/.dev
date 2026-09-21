@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Build software from a specification in the current directory.
+#
+# Usage:
+#   build-from-spec <spec-file>
+#   build-from-spec --resume <session-id>
+#
+# Runs spec-orchestrator with SPEC_PIPELINE_TARGET_DIR set to $PWD so the
+# generated project lands here. Requires `amon` and the spec-to-software
+# pipeline agents (see SPEC_TO_SOFTWARE_PIPELINE.md).
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+DEFAULT_MAX_TURNS=120
+AMON_BIN=${AMON:-}
+MAX_TURNS=$DEFAULT_MAX_TURNS
+JSON=0
+RESUME_ID=
+SPEC_FILE=
+
+usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME <spec-file>
+       $SCRIPT_NAME --resume <session-id>
+
+Turn a specification into software in the current directory using the
+spec-to-software pipeline (amon agent: spec-orchestrator).
+
+Arguments:
+  spec-file       Path to the specification file (markdown or text).
+
+Options:
+  -h, --help      Show this help.
+  --resume ID     Resume an interrupted run (session id from a prior save).
+  --json          Machine-readable JSON on stdout; also writes
+                  .spec-pipeline/pipeline-result.json in the current dir.
+  --max-turns N   Override orchestrator turn cap (default: $DEFAULT_MAX_TURNS).
+
+Environment:
+  AMON            Path to the amon binary (default: amon on PATH, then
+                  ~/.local/bin/amon).
+  AMON_EVENTS     Set to 0 to disable the per-turn event log (default: 1).
+EOF
+}
+
+die() {
+  echo "$SCRIPT_NAME: $*" >&2
+  exit 1
+}
+
+abspath() {
+  python3 -c 'import os, sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$1"
+}
+
+find_amon() {
+  if [[ -n "$AMON_BIN" ]]; then
+    if [[ -x "$AMON_BIN" ]]; then
+      echo "$AMON_BIN"
+      return 0
+    fi
+    if command -v "$AMON_BIN" >/dev/null 2>&1; then
+      command -v "$AMON_BIN"
+      return 0
+    fi
+    die "AMON is set to '$AMON_BIN' but it is not executable"
+  fi
+  if command -v amon >/dev/null 2>&1; then
+    command -v amon
+    return 0
+  fi
+  local fallback="$HOME/.local/bin/amon"
+  if [[ -x "$fallback" ]]; then
+    echo "$fallback"
+    return 0
+  fi
+  die "amon not found on PATH or at ~/.local/bin/amon"
+}
+
+require_orchestrator() {
+  local amon=$1
+  if ! "$amon" --list-agents 2>/dev/null | grep -q '^\- spec-orchestrator:'; then
+    die "agent 'spec-orchestrator' is not loaded. Install the spec-to-software pipeline first."
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --json)
+      JSON=1
+      shift
+      ;;
+    --max-turns)
+      [[ $# -ge 2 ]] || die "--max-turns requires a number"
+      MAX_TURNS=$2
+      [[ "$MAX_TURNS" =~ ^[1-9][0-9]*$ ]] || die "--max-turns must be a positive integer"
+      shift 2
+      ;;
+    --resume)
+      [[ $# -ge 2 ]] || die "--resume requires a session id"
+      RESUME_ID=$2
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown option: $1 (try --help)"
+      ;;
+    *)
+      if [[ -n "$SPEC_FILE" ]]; then
+        die "unexpected extra argument: $1"
+      fi
+      SPEC_FILE=$1
+      shift
+      ;;
+  esac
+done
+
+if [[ $# -gt 0 ]]; then
+  die "unexpected extra argument: $1"
+fi
+
+if [[ -n "$RESUME_ID" && -n "$SPEC_FILE" ]]; then
+  die "pass either a spec file or --resume, not both"
+fi
+
+if [[ -z "$RESUME_ID" && -z "$SPEC_FILE" ]]; then
+  usage >&2
+  exit 1
+fi
+
+if [[ -n "$SPEC_FILE" ]]; then
+  [[ -f "$SPEC_FILE" ]] || die "spec file not found: $SPEC_FILE"
+  [[ -r "$SPEC_FILE" ]] || die "spec file is not readable: $SPEC_FILE"
+fi
+
+TARGET=$(pwd)
+AMON_PATH=$(find_amon)
+require_orchestrator "$AMON_PATH"
+
+export SPEC_PIPELINE_TARGET_DIR="$TARGET"
+export AMON_EVENTS="${AMON_EVENTS:-1}"
+
+mkdir -p "$TARGET/.spec-pipeline"
+
+amon_args=(
+  --agent spec-orchestrator
+  --save-session
+  --max-turns "$MAX_TURNS"
+)
+
+if [[ "$JSON" -eq 1 ]]; then
+  amon_args+=(--json)
+fi
+
+if [[ -n "$RESUME_ID" ]]; then
+  echo "$SCRIPT_NAME: resuming $RESUME_ID in $TARGET" >&2
+  if [[ "$JSON" -eq 1 ]]; then
+    result_path="$TARGET/.spec-pipeline/pipeline-result.json"
+    "$AMON_PATH" --headless "Continue the spec-to-software pipeline." --session-id "$RESUME_ID" "${amon_args[@]}" | tee "$result_path"
+    exit "${PIPESTATUS[0]}"
+  fi
+  exec "$AMON_PATH" --headless "Continue the spec-to-software pipeline." --session-id "$RESUME_ID" "${amon_args[@]}"
+fi
+
+SPEC_ABS=$(abspath "$SPEC_FILE")
+SPEC_TEXT=$(cat "$SPEC_ABS")
+[[ -n "$SPEC_TEXT" ]] || die "spec file is empty: $SPEC_ABS"
+
+TASK=$(printf '%s\n\nTarget directory: %s\n' "$SPEC_TEXT" "$TARGET")
+
+echo "$SCRIPT_NAME: building from $SPEC_ABS" >&2
+echo "$SCRIPT_NAME: target $TARGET" >&2
+
+if [[ "$JSON" -eq 1 ]]; then
+  result_path="$TARGET/.spec-pipeline/pipeline-result.json"
+  "$AMON_PATH" --headless "$TASK" "${amon_args[@]}" | tee "$result_path"
+  exit "${PIPESTATUS[0]}"
+fi
+
+exec "$AMON_PATH" --headless "$TASK" "${amon_args[@]}"
