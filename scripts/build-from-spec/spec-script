@@ -19,6 +19,16 @@
 # exhaustion and manually --resume, this script does that itself, up to
 # SPEC_PIPELINE_MAX_RESUME_ATTEMPTS times (§3.3), stopping immediately
 # (without retrying) on any error that isn't budget/turn exhaustion.
+#
+# It also survives the process being killed outright with no output at all
+# (see DOCTELL-BUILD-INTERRUPTION-LOG.md: observed repeatedly across a real
+# build, never root-caused to amon/the pipeline or macOS power management --
+# something external kills the long-running amon process mid-run). Because a
+# session id is minted *before* the first amon call and passed via
+# --session-id/--save-session from the start, amon's incrementally-persisted
+# session state is always resumable even if a given attempt produced zero
+# stdout -- this script auto-resumes that case too, instead of dying and
+# requiring a human to go dig the session id out of amon's session store.
 set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
@@ -60,8 +70,9 @@ Environment:
 
 Auto-resume:
   If the orchestrator stops because it ran out of turns or time (not a real
-  error), this script automatically resumes the saved session and continues,
-  up to --max-resumes times, before giving up and reporting a stuck run.
+  error), or the amon process is killed outright with no output at all, this
+  script automatically resumes the saved session and continues, up to
+  --max-resumes times, before giving up and reporting a stuck run.
 EOF
 }
 
@@ -72,6 +83,28 @@ die() {
 
 abspath() {
   python3 -c 'import os, sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$1"
+}
+
+new_session_id() {
+  python3 -c 'import uuid; print(uuid.uuid4())'
+}
+
+# Build a synthetic --json-shaped failure result for the case where amon
+# itself produced no parseable output to report one (e.g. killed externally).
+killed_result() {
+  # killed_result <session_id> <attempts> <message>
+  python3 -c '
+import json, sys
+session_id, attempts, message = sys.argv[1:4]
+print(json.dumps({
+    "ok": False,
+    "agent": "spec-orchestrator",
+    "session_id": session_id,
+    "turns": None,
+    "error": message,
+    "resume_attempts": int(attempts),
+}))
+' "$1" "$2" "$3"
 }
 
 find_amon() {
@@ -250,21 +283,25 @@ else
   SPEC_ABS=$(abspath "$SPEC_FILE")
   SPEC_TEXT=$(cat "$SPEC_ABS")
   [[ -n "$SPEC_TEXT" ]] || die "spec file is empty: $SPEC_ABS"
-  SESSION_ID=""
+  # Mint the session id ourselves, up front, rather than waiting to learn it
+  # from amon's --json stdout. amon accepts a caller-chosen --session-id for
+  # a brand-new session and persists to it incrementally (once --save-session
+  # is set), so this id stays valid for --resume even if a run dies before
+  # printing any output at all.
+  SESSION_ID=$(new_session_id)
   TASK=$(printf '%s\n\nTarget directory: %s\n' "$SPEC_TEXT" "$TARGET")
   echo "$SCRIPT_NAME: building from $SPEC_ABS" >&2
   echo "$SCRIPT_NAME: target $TARGET" >&2
 fi
 
 result_path="$TARGET/.spec-pipeline/pipeline-result.json"
+session_id_path="$TARGET/.spec-pipeline/session-id"
 attempt=0
 result=""
 
 while :; do
-  amon_args=(--agent spec-orchestrator --save-session --max-turns "$MAX_TURNS" --json)
-  if [[ -n "$SESSION_ID" ]]; then
-    amon_args+=(--session-id "$SESSION_ID")
-  fi
+  echo "$SESSION_ID" > "$session_id_path"
+  amon_args=(--agent spec-orchestrator --save-session --session-id "$SESSION_ID" --max-turns "$MAX_TURNS" --json)
 
   set +e
   result=$("$AMON_PATH" --headless "$TASK" "${amon_args[@]}")
@@ -272,11 +309,23 @@ while :; do
   set -e
 
   if [[ $status -ne 0 && -z "$result" ]]; then
-    die "amon exited with status $status and produced no output"
+    # amon produced no output at all -- most likely the process was killed
+    # externally mid-run (see DOCTELL-BUILD-INTERRUPTION-LOG.md), not a real
+    # pipeline error. Session $SESSION_ID was pre-assigned and amon persists
+    # progress after every turn, so resuming it is safe even though this
+    # attempt reported nothing.
+    if [[ "$attempt" -ge "$MAX_RESUME_ATTEMPTS" ]]; then
+      result=$(killed_result "$SESSION_ID" "$attempt" "amon exited with status $status and produced no output after $attempt auto-resume attempt(s) -- likely killed externally; resume manually with: $SCRIPT_NAME --resume $SESSION_ID")
+      break
+    fi
+    attempt=$((attempt + 1))
+    echo "$SCRIPT_NAME: amon exited with status $status and no output -- likely killed externally, not a pipeline error; auto-resuming session $SESSION_ID ($attempt/$MAX_RESUME_ATTEMPTS)" >&2
+    TASK="Continue the spec-to-software pipeline. The checklist in this session is authoritative -- do not redo anything already marked completed."
+    continue
   fi
 
-  new_session_id=$(extract_field "$result" session_id)
-  [[ -n "$new_session_id" ]] && SESSION_ID="$new_session_id"
+  resumed_session_id=$(extract_field "$result" session_id)
+  [[ -n "$resumed_session_id" ]] && SESSION_ID="$resumed_session_id"
 
   decision=$(classify_result <<<"$result")
   if [[ "$decision" != "retry" || "$attempt" -ge "$MAX_RESUME_ATTEMPTS" ]]; then
