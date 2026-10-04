@@ -5,30 +5,18 @@
 #   build-from-spec <spec-file>
 #   build-from-spec --resume <session-id>
 #
-# Runs spec-orchestrator with SPEC_PIPELINE_TARGET_DIR set to $PWD so the
-# generated project lands here. Requires `amon` and the spec-to-software
-# pipeline agents (see SPEC_TO_SOFTWARE_PIPELINE.md).
+# Runs the spec-orchestrator agent (via `amon`) with SPEC_PIPELINE_TARGET_DIR
+# set to $PWD, so the generated project lands here. Requires `amon` and the
+# spec-to-software pipeline agents to already be installed.
 #
-# Before ever calling amon, runs preflight-check.py against every pipeline
-# agent config (catches the tools-vs-allowed_tools class of bug from
-# SPEC-PIPELINE-WORKFLOW-ANALYSIS.md §2.2/§2.6 before it costs a real turn).
+# Runs preflight-check.py against every pipeline agent config before ever
+# calling amon, to catch config bugs before they cost a real turn.
 #
-# The orchestrator's own max_runtime_s (7200s/2h) is smaller than a real
-# build can take (see SPEC-PIPELINE-WORKFLOW-ANALYSIS.md §2.9: one real run
-# took 10.9 hours). Rather than requiring a human to notice budget/turn
-# exhaustion and manually --resume, this script does that itself, up to
-# SPEC_PIPELINE_MAX_RESUME_ATTEMPTS times (§3.3), stopping immediately
-# (without retrying) on any error that isn't budget/turn exhaustion.
-#
-# It also survives the process being killed outright with no output at all
-# (see DOCTELL-BUILD-INTERRUPTION-LOG.md: observed repeatedly across a real
-# build, never root-caused to amon/the pipeline or macOS power management --
-# something external kills the long-running amon process mid-run). Because a
-# session id is minted *before* the first amon call and passed via
-# --session-id/--save-session from the start, amon's incrementally-persisted
-# session state is always resumable even if a given attempt produced zero
-# stdout -- this script auto-resumes that case too, instead of dying and
-# requiring a human to go dig the session id out of amon's session store.
+# A real build can run well past the orchestrator's own turn/time budget, and
+# the amon process can also be killed externally with zero output (see
+# HARNESS-BACKGROUND-KILL-ISSUE.md). Rather than requiring a human to notice
+# and manually --resume, this script auto-resumes both cases itself, up to
+# --max-resumes times, stopping immediately on any other error.
 set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
@@ -99,8 +87,8 @@ new_session_id() {
   python3 -c 'import uuid; print(uuid.uuid4())'
 }
 
-# Build a synthetic --json-shaped failure result for the case where amon
-# itself produced no parseable output to report one (e.g. killed externally).
+# Synthesize a --json-shaped failure result when amon produced no parseable
+# output of its own (e.g. killed externally).
 killed_result() {
   # killed_result <session_id> <attempts> <message>
   python3 -c '
@@ -296,18 +284,11 @@ export AMON_EVENTS="${AMON_EVENTS:-1}"
 mkdir -p "$TARGET/.spec-pipeline"
 
 if [[ "$DETACH" -eq 1 ]]; then
-  # Re-launch ourselves (sans --detach) fully detached from whatever shell/
-  # session invoked us -- setsid puts the whole process tree (this script AND
-  # the amon process it execs) in a new session immune to the controlling
-  # terminal's SIGHUP; nohup ignores SIGHUP explicitly; disown drops it from
-  # this shell's job table. See HARNESS-BACKGROUND-KILL-ISSUE.md: the amon
-  # process installs no SIGTERM/SIGHUP handler at all, so if the invoking
-  # session is ever torn down mid-run, this is what survives it.
-  # macOS has no setsid(1) (that's Linux/util-linux); os.setsid() via python3
-  # (already a hard dependency of this script, see abspath()/new_session_id()
-  # above) is the portable equivalent. SIG_IGN set by nohup survives both the
-  # setsid() call and the following exec -- POSIX exec only resets signal
-  # dispositions that have a custom handler back to default, not SIG_IGN.
+  # Re-launch ourselves (sans --detach) in a new session with SIGHUP ignored
+  # and dropped from the job table, so a multi-hour run survives the
+  # invoking shell/session being torn down -- see
+  # HARNESS-BACKGROUND-KILL-ISSUE.md. macOS has no setsid(1); os.setsid()
+  # via python3 is the portable equivalent.
   run_log="$TARGET/.spec-pipeline/run.log"
   : >>"$run_log"
   nohup python3 -c '
@@ -324,15 +305,10 @@ os.execvp(sys.argv[1], sys.argv[1:])
   exit 0
 fi
 
-# Signal forensics: the amon process this script execs installs no
-# SIGTERM/SIGHUP handler of its own (see HARNESS-BACKGROUND-KILL-ISSUE.md), so
-# a bare SIGHUP would otherwise kill it with zero trace. The SIGTERM trap
-# below fires in all cases. The SIGHUP trap only fires for a direct (non
-# --detach) invocation: bash refuses to let a script override a signal that
-# was already SIG_IGN *when the shell started* (verified empirically), and in
-# the --detach path HUP is set to SIG_IGN by nohup before this process even
-# starts -- so under --detach, HUP is unconditionally ignored with no log
-# line, which is the correct (more bulletproof) outcome, just not a logged one.
+# Log any SIGTERM/SIGHUP so a future silent kill leaves a trace (see
+# HARNESS-BACKGROUND-KILL-ISSUE.md). Under --detach, HUP is already
+# unconditionally ignored by nohup before this trap can take effect, so it
+# only ever logs on a direct (non --detach) invocation.
 trap 'printf "%s received SIGHUP (ignored, continuing)\n" "$(date -u +%FT%TZ)" >>"$TARGET/.spec-pipeline/signals.log"' HUP
 trap 'printf "%s received SIGTERM, exiting\n" "$(date -u +%FT%TZ)" >>"$TARGET/.spec-pipeline/signals.log"; exit 143' TERM
 
@@ -344,11 +320,10 @@ else
   SPEC_ABS=$(abspath "$SPEC_FILE")
   SPEC_TEXT=$(cat "$SPEC_ABS")
   [[ -n "$SPEC_TEXT" ]] || die "spec file is empty: $SPEC_ABS"
-  # Mint the session id ourselves, up front, rather than waiting to learn it
-  # from amon's --json stdout. amon accepts a caller-chosen --session-id for
-  # a brand-new session and persists to it incrementally (once --save-session
-  # is set), so this id stays valid for --resume even if a run dies before
-  # printing any output at all.
+  # Mint the session id ourselves rather than waiting to learn it from amon's
+  # --json stdout: amon accepts a caller-chosen --session-id and persists to
+  # it incrementally, so it stays valid for --resume even if this attempt
+  # dies before printing any output.
   SESSION_ID=$(new_session_id)
   TASK=$(printf '%s\n\nTarget directory: %s\n' "$SPEC_TEXT" "$TARGET")
   echo "$SCRIPT_NAME: building from $SPEC_ABS" >&2
@@ -370,11 +345,9 @@ while :; do
   set -e
 
   if [[ $status -ne 0 && -z "$result" ]]; then
-    # amon produced no output at all -- most likely the process was killed
-    # externally mid-run (see DOCTELL-BUILD-INTERRUPTION-LOG.md), not a real
-    # pipeline error. Session $SESSION_ID was pre-assigned and amon persists
-    # progress after every turn, so resuming it is safe even though this
-    # attempt reported nothing.
+    # No output at all almost certainly means amon was killed externally,
+    # not a real pipeline error -- safe to resume since the session id was
+    # pre-assigned and amon persists progress every turn.
     if [[ "$attempt" -ge "$MAX_RESUME_ATTEMPTS" ]]; then
       result=$(killed_result "$SESSION_ID" "$attempt" "amon exited with status $status and produced no output after $attempt auto-resume attempt(s) -- likely killed externally; resume manually with: $SCRIPT_NAME --resume $SESSION_ID")
       break
