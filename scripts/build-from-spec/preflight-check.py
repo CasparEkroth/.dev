@@ -4,9 +4,6 @@ name must be in that agent's allowed_tools, not just tools -- otherwise the
 call is silently unusable in headless mode (no confirmation UI exists to
 grant it). Run before spec-script ever invokes amon. Exit 0 if every
 pipeline agent passes, exit 1 with a report otherwise.
-
-See scripts/build-from-spec/SPEC-PIPELINE-WORKFLOW-ANALYSIS.md §2.2/§2.6/§3.1
-for the incident this guards against.
 """
 from __future__ import annotations
 

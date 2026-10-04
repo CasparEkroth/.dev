@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# this is a script that adds all the agents from amon the 'build-from-spec' needs.
+# Installs the amon agent configs that build-from-spec depends on.
 
 AMON_BIN=${AMON:-}
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,7 +35,7 @@ find_amon
 
 mkdir -p ~/.amon/agents/ 
 
-#install agents
+# Install agents
 cat > "$AGENTS_PATH/architect.json" << 'EOF'
 {
   "name": "architect",
@@ -214,8 +214,4 @@ cat > "$AGENTS_PATH/web-crawler.json" << 'EOF'
 EOF
 
 echo "Created $HOME/.amon/agents/web-crawler.json"
-
-
-
-
 
