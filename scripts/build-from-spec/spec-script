@@ -39,8 +39,10 @@ AMON_BIN=${AMON:-}
 MAX_TURNS=$DEFAULT_MAX_TURNS
 MAX_RESUME_ATTEMPTS=${SPEC_PIPELINE_MAX_RESUME_ATTEMPTS:-$DEFAULT_MAX_RESUME_ATTEMPTS}
 JSON=0
+DETACH=0
 RESUME_ID=
 SPEC_FILE=
+ORIG_ARGS=("$@")
 
 usage() {
   cat <<EOF
@@ -60,6 +62,14 @@ Options:
                   .spec-pipeline/pipeline-result.json in the current dir.
   --max-turns N   Override orchestrator turn cap per attempt (default: $DEFAULT_MAX_TURNS).
   --max-resumes N Override auto-resume attempt cap (default: $DEFAULT_MAX_RESUME_ATTEMPTS).
+  --detach        Re-launch under setsid+nohup, detached from the invoking
+                  shell/terminal, and return immediately (prints the pid and
+                  log path). Use this when kicking off a multi-hour run from
+                  inside a session (e.g. a Claude Code Bash tool call) whose
+                  own lifetime you don't want this run tied to -- see
+                  HARNESS-BACKGROUND-KILL-ISSUE.md. Poll
+                  .spec-pipeline/run.log and .spec-pipeline/pipeline-result.json
+                  afterward instead of holding a long call open.
 
 Environment:
   AMON                                Path to the amon binary (default: amon
@@ -213,6 +223,10 @@ while [[ $# -gt 0 ]]; do
       JSON=1
       shift
       ;;
+    --detach)
+      DETACH=1
+      shift
+      ;;
     --max-turns)
       [[ $# -ge 2 ]] || die "--max-turns requires a number"
       MAX_TURNS=$2
@@ -265,6 +279,12 @@ if [[ -n "$SPEC_FILE" ]]; then
   [[ -r "$SPEC_FILE" ]] || die "spec file is not readable: $SPEC_FILE"
 fi
 
+FILTERED_ARGS=()
+for arg in "${ORIG_ARGS[@]}"; do
+  [[ "$arg" == "--detach" ]] && continue
+  FILTERED_ARGS+=("$arg")
+done
+
 TARGET=$(pwd)
 AMON_PATH=$(find_amon)
 require_orchestrator "$AMON_PATH"
@@ -274,6 +294,47 @@ export SPEC_PIPELINE_TARGET_DIR="$TARGET"
 export AMON_EVENTS="${AMON_EVENTS:-1}"
 
 mkdir -p "$TARGET/.spec-pipeline"
+
+if [[ "$DETACH" -eq 1 ]]; then
+  # Re-launch ourselves (sans --detach) fully detached from whatever shell/
+  # session invoked us -- setsid puts the whole process tree (this script AND
+  # the amon process it execs) in a new session immune to the controlling
+  # terminal's SIGHUP; nohup ignores SIGHUP explicitly; disown drops it from
+  # this shell's job table. See HARNESS-BACKGROUND-KILL-ISSUE.md: the amon
+  # process installs no SIGTERM/SIGHUP handler at all, so if the invoking
+  # session is ever torn down mid-run, this is what survives it.
+  # macOS has no setsid(1) (that's Linux/util-linux); os.setsid() via python3
+  # (already a hard dependency of this script, see abspath()/new_session_id()
+  # above) is the portable equivalent. SIG_IGN set by nohup survives both the
+  # setsid() call and the following exec -- POSIX exec only resets signal
+  # dispositions that have a custom handler back to default, not SIG_IGN.
+  run_log="$TARGET/.spec-pipeline/run.log"
+  : >>"$run_log"
+  nohup python3 -c '
+import os, sys
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+' "$0" "${FILTERED_ARGS[@]}" </dev/null >>"$run_log" 2>&1 &
+  child_pid=$!
+  disown "$child_pid" 2>/dev/null || true
+  echo "$child_pid" >"$TARGET/.spec-pipeline/pid"
+  echo "$SCRIPT_NAME: detached (pid $child_pid)" >&2
+  echo "$SCRIPT_NAME: log: $run_log" >&2
+  echo "$SCRIPT_NAME: result (when done): $TARGET/.spec-pipeline/pipeline-result.json" >&2
+  exit 0
+fi
+
+# Signal forensics: the amon process this script execs installs no
+# SIGTERM/SIGHUP handler of its own (see HARNESS-BACKGROUND-KILL-ISSUE.md), so
+# a bare SIGHUP would otherwise kill it with zero trace. The SIGTERM trap
+# below fires in all cases. The SIGHUP trap only fires for a direct (non
+# --detach) invocation: bash refuses to let a script override a signal that
+# was already SIG_IGN *when the shell started* (verified empirically), and in
+# the --detach path HUP is set to SIG_IGN by nohup before this process even
+# starts -- so under --detach, HUP is unconditionally ignored with no log
+# line, which is the correct (more bulletproof) outcome, just not a logged one.
+trap 'printf "%s received SIGHUP (ignored, continuing)\n" "$(date -u +%FT%TZ)" >>"$TARGET/.spec-pipeline/signals.log"' HUP
+trap 'printf "%s received SIGTERM, exiting\n" "$(date -u +%FT%TZ)" >>"$TARGET/.spec-pipeline/signals.log"; exit 143' TERM
 
 if [[ -n "$RESUME_ID" ]]; then
   SESSION_ID="$RESUME_ID"
