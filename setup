@@ -81,6 +81,7 @@ fi
 mkdir -p "$INSTALL_DIR"
 
 install_amon_config=0
+install_spec_deps=0
 
 if [ "$#" -gt 0 ]; then
     for name in "$@"; do
@@ -95,6 +96,10 @@ if [ "$#" -gt 0 ]; then
 
         if [ "$(basename "$command_path")" = "amon" ]; then
             install_amon_config=1
+        fi
+        
+        if [ "$(basename "$command_path")" = "build-from-spec" ]; then
+            install_spec_deps=1
         fi
     done
 else
@@ -123,6 +128,15 @@ if [ "$install_amon_config" -eq 1 ]; then
     chmod +x scripts/amon/config/setup/install
     ./scripts/amon/config/setup/install
 fi
+
+if [ "$install_spec_deps" -eq 1 ]; then
+    echo
+    echo "Creating base agents and skills for build-from-spec"
+    echo
+    chmod +x scripts/build-from-spec/install-spec-deps
+    ./scripts/build-from-spec/install-spec-deps
+fi
+
 
 echo
 echo "Done."

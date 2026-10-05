@@ -1,0 +1,387 @@
+#!/usr/bin/env bash
+# Build software from a specification in the current directory.
+#
+# Usage:
+#   build-from-spec <spec-file>
+#   build-from-spec --resume <session-id>
+#
+# Runs the spec-orchestrator agent (via `amon`) with SPEC_PIPELINE_TARGET_DIR
+# set to $PWD, so the generated project lands here. Requires `amon` and the
+# spec-to-software pipeline agents to already be installed.
+#
+# Runs preflight-check.py against every pipeline agent config before ever
+# calling amon, to catch config bugs before they cost a real turn.
+#
+# A real build can run well past the orchestrator's own turn/time budget, and
+# the amon process can also be killed externally with zero output (see
+# HARNESS-BACKGROUND-KILL-ISSUE.md). Rather than requiring a human to notice
+# and manually --resume, this script auto-resumes both cases itself, up to
+# --max-resumes times, stopping immediately on any other error.
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+DEFAULT_MAX_TURNS=120
+DEFAULT_MAX_RESUME_ATTEMPTS=8
+AMON_BIN=${AMON:-}
+MAX_TURNS=$DEFAULT_MAX_TURNS
+MAX_RESUME_ATTEMPTS=${SPEC_PIPELINE_MAX_RESUME_ATTEMPTS:-$DEFAULT_MAX_RESUME_ATTEMPTS}
+JSON=0
+DETACH=0
+RESUME_ID=
+SPEC_FILE=
+ORIG_ARGS=("$@")
+
+usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME <spec-file>
+       $SCRIPT_NAME --resume <session-id>
+
+Turn a specification into software in the current directory using the
+spec-to-software pipeline (amon agent: spec-orchestrator).
+
+Arguments:
+  spec-file       Path to the specification file (markdown or text).
+
+Options:
+  -h, --help      Show this help.
+  --resume ID     Resume an interrupted run (session id from a prior save).
+  --json          Machine-readable JSON on stdout; also writes
+                  .spec-pipeline/pipeline-result.json in the current dir.
+  --max-turns N   Override orchestrator turn cap per attempt (default: $DEFAULT_MAX_TURNS).
+  --max-resumes N Override auto-resume attempt cap (default: $DEFAULT_MAX_RESUME_ATTEMPTS).
+  --detach        Re-launch under setsid+nohup, detached from the invoking
+                  shell/terminal, and return immediately (prints the pid and
+                  log path). Use this when kicking off a multi-hour run from
+                  inside a session (e.g. a Claude Code Bash tool call) whose
+                  own lifetime you don't want this run tied to -- see
+                  HARNESS-BACKGROUND-KILL-ISSUE.md. Poll
+                  .spec-pipeline/run.log and .spec-pipeline/pipeline-result.json
+                  afterward instead of holding a long call open.
+
+Environment:
+  AMON                                Path to the amon binary (default: amon
+                                       on PATH, then ~/.local/bin/amon).
+  AMON_EVENTS                         Set to 0 to disable the per-turn event
+                                       log (default: 1).
+  SPEC_PIPELINE_MAX_RESUME_ATTEMPTS   Same as --max-resumes.
+
+Auto-resume:
+  If the orchestrator stops because it ran out of turns or time (not a real
+  error), or the amon process is killed outright with no output at all, this
+  script automatically resumes the saved session and continues, up to
+  --max-resumes times, before giving up and reporting a stuck run.
+EOF
+}
+
+die() {
+  echo "$SCRIPT_NAME: $*" >&2
+  exit 1
+}
+
+abspath() {
+  python3 -c 'import os, sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$1"
+}
+
+new_session_id() {
+  python3 -c 'import uuid; print(uuid.uuid4())'
+}
+
+# Synthesize a --json-shaped failure result when amon produced no parseable
+# output of its own (e.g. killed externally).
+killed_result() {
+  # killed_result <session_id> <attempts> <message>
+  python3 -c '
+import json, sys
+session_id, attempts, message = sys.argv[1:4]
+print(json.dumps({
+    "ok": False,
+    "agent": "spec-orchestrator",
+    "session_id": session_id,
+    "turns": None,
+    "error": message,
+    "resume_attempts": int(attempts),
+}))
+' "$1" "$2" "$3"
+}
+
+find_amon() {
+  if [[ -n "$AMON_BIN" ]]; then
+    if [[ -x "$AMON_BIN" ]]; then
+      echo "$AMON_BIN"
+      return 0
+    fi
+    if command -v "$AMON_BIN" >/dev/null 2>&1; then
+      command -v "$AMON_BIN"
+      return 0
+    fi
+    die "AMON is set to '$AMON_BIN' but it is not executable"
+  fi
+  if command -v amon >/dev/null 2>&1; then
+    command -v amon
+    return 0
+  fi
+  local fallback="$HOME/.local/bin/amon"
+  if [[ -x "$fallback" ]]; then
+    echo "$fallback"
+    return 0
+  fi
+  die "amon not found on PATH or at ~/.local/bin/amon"
+}
+
+require_orchestrator() {
+  local amon=$1
+  if ! "$amon" --list-agents 2>/dev/null | grep -q '^\- spec-orchestrator:'; then
+    die "agent 'spec-orchestrator' is not loaded. Install the spec-to-software pipeline first."
+  fi
+}
+
+run_preflight() {
+  local preflight="$SCRIPT_DIR/preflight-check.py"
+  [[ -f "$preflight" ]] || return 0
+  if ! python3 "$preflight"; then
+    die "preflight check failed (see above) -- fix the flagged agent config(s) before running the pipeline"
+  fi
+}
+
+# Decide, from one attempt's --json result, whether another --resume attempt
+# is warranted. Prints "retry" or "stop" on stdout.
+classify_result() {
+  python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    print("stop")
+    sys.exit(0)
+if data.get("ok"):
+    print("stop")
+    sys.exit(0)
+error = str(data.get("error") or "")
+exhaustion_markers = (
+    "Time budget of",
+    "timed out after",
+    "Max turns reached",
+    "Interrupted.",
+)
+print("retry" if any(m in error for m in exhaustion_markers) else "stop")
+'
+}
+
+extract_field() {
+  # extract_field <json> <field>
+  python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    print("")
+    sys.exit(0)
+value = data.get(sys.argv[2])
+print(value if value is not None else "")
+' "$1" "$2"
+}
+
+print_human_summary() {
+  python3 -c '
+import json, sys
+data = json.loads(sys.argv[1])
+status = "OK" if data.get("ok") else "FAILED"
+agent = data.get("agent")
+turns = data.get("turns")
+session_id = data.get("session_id")
+print(f"[{status}] agent={agent} turns={turns} session_id={session_id}")
+error = data.get("error")
+if error:
+    print(f"error: {error}")
+result = data.get("result")
+if result:
+    print()
+    print(result)
+' "$1"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --json)
+      JSON=1
+      shift
+      ;;
+    --detach)
+      DETACH=1
+      shift
+      ;;
+    --max-turns)
+      [[ $# -ge 2 ]] || die "--max-turns requires a number"
+      MAX_TURNS=$2
+      [[ "$MAX_TURNS" =~ ^[1-9][0-9]*$ ]] || die "--max-turns must be a positive integer"
+      shift 2
+      ;;
+    --max-resumes)
+      [[ $# -ge 2 ]] || die "--max-resumes requires a number"
+      MAX_RESUME_ATTEMPTS=$2
+      [[ "$MAX_RESUME_ATTEMPTS" =~ ^[0-9]+$ ]] || die "--max-resumes must be a non-negative integer"
+      shift 2
+      ;;
+    --resume)
+      [[ $# -ge 2 ]] || die "--resume requires a session id"
+      RESUME_ID=$2
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown option: $1 (try --help)"
+      ;;
+    *)
+      if [[ -n "$SPEC_FILE" ]]; then
+        die "unexpected extra argument: $1"
+      fi
+      SPEC_FILE=$1
+      shift
+      ;;
+  esac
+done
+
+if [[ $# -gt 0 ]]; then
+  die "unexpected extra argument: $1"
+fi
+
+if [[ -n "$RESUME_ID" && -n "$SPEC_FILE" ]]; then
+  die "pass either a spec file or --resume, not both"
+fi
+
+if [[ -z "$RESUME_ID" && -z "$SPEC_FILE" ]]; then
+  usage >&2
+  exit 1
+fi
+
+if [[ -n "$SPEC_FILE" ]]; then
+  [[ -f "$SPEC_FILE" ]] || die "spec file not found: $SPEC_FILE"
+  [[ -r "$SPEC_FILE" ]] || die "spec file is not readable: $SPEC_FILE"
+fi
+
+FILTERED_ARGS=()
+for arg in "${ORIG_ARGS[@]}"; do
+  [[ "$arg" == "--detach" ]] && continue
+  FILTERED_ARGS+=("$arg")
+done
+
+TARGET=$(pwd)
+AMON_PATH=$(find_amon)
+require_orchestrator "$AMON_PATH"
+run_preflight
+
+export SPEC_PIPELINE_TARGET_DIR="$TARGET"
+export AMON_EVENTS="${AMON_EVENTS:-1}"
+
+mkdir -p "$TARGET/.spec-pipeline"
+
+if [[ "$DETACH" -eq 1 ]]; then
+  # Re-launch ourselves (sans --detach) in a new session with SIGHUP ignored
+  # and dropped from the job table, so a multi-hour run survives the
+  # invoking shell/session being torn down -- see
+  # HARNESS-BACKGROUND-KILL-ISSUE.md. macOS has no setsid(1); os.setsid()
+  # via python3 is the portable equivalent.
+  run_log="$TARGET/.spec-pipeline/run.log"
+  : >>"$run_log"
+  nohup python3 -c '
+import os, sys
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+' "$0" "${FILTERED_ARGS[@]}" </dev/null >>"$run_log" 2>&1 &
+  child_pid=$!
+  disown "$child_pid" 2>/dev/null || true
+  echo "$child_pid" >"$TARGET/.spec-pipeline/pid"
+  echo "$SCRIPT_NAME: detached (pid $child_pid)" >&2
+  echo "$SCRIPT_NAME: log: $run_log" >&2
+  echo "$SCRIPT_NAME: result (when done): $TARGET/.spec-pipeline/pipeline-result.json" >&2
+  exit 0
+fi
+
+# Log any SIGTERM/SIGHUP so a future silent kill leaves a trace (see
+# HARNESS-BACKGROUND-KILL-ISSUE.md). Under --detach, HUP is already
+# unconditionally ignored by nohup before this trap can take effect, so it
+# only ever logs on a direct (non --detach) invocation.
+trap 'printf "%s received SIGHUP (ignored, continuing)\n" "$(date -u +%FT%TZ)" >>"$TARGET/.spec-pipeline/signals.log"' HUP
+trap 'printf "%s received SIGTERM, exiting\n" "$(date -u +%FT%TZ)" >>"$TARGET/.spec-pipeline/signals.log"; exit 143' TERM
+
+if [[ -n "$RESUME_ID" ]]; then
+  SESSION_ID="$RESUME_ID"
+  TASK="Continue the spec-to-software pipeline."
+  echo "$SCRIPT_NAME: resuming $RESUME_ID in $TARGET" >&2
+else
+  SPEC_ABS=$(abspath "$SPEC_FILE")
+  SPEC_TEXT=$(cat "$SPEC_ABS")
+  [[ -n "$SPEC_TEXT" ]] || die "spec file is empty: $SPEC_ABS"
+  # Mint the session id ourselves rather than waiting to learn it from amon's
+  # --json stdout: amon accepts a caller-chosen --session-id and persists to
+  # it incrementally, so it stays valid for --resume even if this attempt
+  # dies before printing any output.
+  SESSION_ID=$(new_session_id)
+  TASK=$(printf '%s\n\nTarget directory: %s\n' "$SPEC_TEXT" "$TARGET")
+  echo "$SCRIPT_NAME: building from $SPEC_ABS" >&2
+  echo "$SCRIPT_NAME: target $TARGET" >&2
+fi
+
+result_path="$TARGET/.spec-pipeline/pipeline-result.json"
+session_id_path="$TARGET/.spec-pipeline/session-id"
+attempt=0
+result=""
+
+while :; do
+  echo "$SESSION_ID" > "$session_id_path"
+  amon_args=(--agent spec-orchestrator --save-session --session-id "$SESSION_ID" --max-turns "$MAX_TURNS" --json)
+
+  set +e
+  result=$("$AMON_PATH" --headless "$TASK" "${amon_args[@]}")
+  status=$?
+  set -e
+
+  if [[ $status -ne 0 && -z "$result" ]]; then
+    # No output at all almost certainly means amon was killed externally,
+    # not a real pipeline error -- safe to resume since the session id was
+    # pre-assigned and amon persists progress every turn.
+    if [[ "$attempt" -ge "$MAX_RESUME_ATTEMPTS" ]]; then
+      result=$(killed_result "$SESSION_ID" "$attempt" "amon exited with status $status and produced no output after $attempt auto-resume attempt(s) -- likely killed externally; resume manually with: $SCRIPT_NAME --resume $SESSION_ID")
+      break
+    fi
+    attempt=$((attempt + 1))
+    echo "$SCRIPT_NAME: amon exited with status $status and no output -- likely killed externally, not a pipeline error; auto-resuming session $SESSION_ID ($attempt/$MAX_RESUME_ATTEMPTS)" >&2
+    TASK="Continue the spec-to-software pipeline. The checklist in this session is authoritative -- do not redo anything already marked completed."
+    continue
+  fi
+
+  resumed_session_id=$(extract_field "$result" session_id)
+  [[ -n "$resumed_session_id" ]] && SESSION_ID="$resumed_session_id"
+
+  decision=$(classify_result <<<"$result")
+  if [[ "$decision" != "retry" || "$attempt" -ge "$MAX_RESUME_ATTEMPTS" ]]; then
+    break
+  fi
+
+  attempt=$((attempt + 1))
+  echo "$SCRIPT_NAME: attempt $attempt hit budget/turn exhaustion, auto-resuming session $SESSION_ID ($attempt/$MAX_RESUME_ATTEMPTS)" >&2
+  TASK="Continue the spec-to-software pipeline. The checklist in this session is authoritative -- do not redo anything already marked completed."
+done
+
+echo "$result" > "$result_path"
+
+if [[ "$JSON" -eq 1 ]]; then
+  echo "$result"
+else
+  print_human_summary "$result"
+fi
+
+ok=$(extract_field "$result" ok)
+if [[ "$ok" == "True" ]]; then
+  exit 0
+else
+  exit 1
+fi
