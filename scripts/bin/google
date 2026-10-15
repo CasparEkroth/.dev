@@ -5,4 +5,12 @@ all="$*"
 
 search="$BASE_URL$all"
 
-open "$search"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    open "$search"
+elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    xdg-open "$search"
+elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then 
+    start "$search"
+else
+    echo "The operating system is not supported."
+fi
