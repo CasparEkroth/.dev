@@ -51,6 +51,8 @@ Current command:
 
 - `amon`: interactive coding agent with session management, tool use and headless mode. See [docs/amon/](docs/amon/index.md).
 
+- `google`: small script that opens a tab and search in google.
+
 ## Documentation
 
 Tool docs and examples are in [`docs/`](docs/index.md):
@@ -61,6 +63,7 @@ Tool docs and examples are in [`docs/`](docs/index.md):
 | **vector-index** | [docs/vector/](docs/vector/index.md) | active |
 | **search** | [docs/search.md](docs/search.md) | active |
 | **git-suggest** | [docs/git-suggest.md](docs/git-suggest.md) | active |
+| **google** | [docs/google.md](docs/google.md) | active |
 
 For amon specifically, start with the [overview](docs/amon/index.md), [CLI](docs/amon/cli.md), and [agent config](docs/amon/agent-config.md).
 
